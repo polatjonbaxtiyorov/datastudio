@@ -33,7 +33,11 @@ st.markdown("""
 html, body, [class*="css"] {
     font-family: 'DM Sans', sans-serif;
 }
-.block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+.block-container { padding-top: 3.5rem; padding-bottom: 2rem; }
+
+/* push tab bar down so labels are never clipped */
+.stTabs { margin-top: 0.5rem; }
+[data-testid="stTabBar"] { padding-top: 0.25rem; }
 
 .metric-card {
     background: #f8f9fb;
@@ -64,6 +68,26 @@ html, body, [class*="css"] {
 .violation-badge {
     background: #fee2e2; color: #991b1b;
     border-radius: 4px; padding: 2px 8px; font-size: 0.78rem; font-weight: 600;
+}
+
+/* ── Dataframe global alignment ── */
+/* Left-align all header cells */
+[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] [data-testid="glideDataEditor"] .header-cell,
+.stDataFrame thead th {
+    text-align: left !important;
+    justify-content: flex-start !important;
+}
+/* Left-align text/string cells */
+[data-testid="stDataFrame"] td,
+.stDataFrame tbody td {
+    text-align: left !important;
+}
+/* Right-align numeric cells (Streamlit adds dvn-* class for number columns) */
+[data-testid="stDataFrame"] [class*="dvn-"] .cell-wrap--number,
+[data-testid="stDataFrame"] .gdg-cell[data-type="number"] {
+    text-align: right !important;
+    justify-content: flex-end !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -118,6 +142,18 @@ def safe_run(func, *args, **kwargs):
         return func(*args, **kwargs), None
     except Exception as e:
         return None, str(e)
+
+def show_table(df, **kwargs):
+    """Render a dataframe with consistent alignment:
+    text columns left-aligned, numeric columns right-aligned."""
+    col_cfg = {}
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_cfg[col] = st.column_config.NumberColumn(col, format="%.4g")
+        else:
+            col_cfg[col] = st.column_config.TextColumn(col)
+    st.dataframe(df, column_config=col_cfg, hide_index=True,
+                 use_container_width=True, **kwargs)
 
 def numeric_cols(df):
     return df.select_dtypes(include="number").columns.tolist()
@@ -226,6 +262,16 @@ with st.sidebar:
                 reset_session()
                 st.rerun()
 
+    # ── Target user label pinned to sidebar bottom
+    st.markdown("---")
+    st.markdown("""
+<div style="font-size:0.75rem; color:#9ca3af; line-height:1.5;">
+    <b style="color:#6b7280;">🎯 Built for</b><br>
+    Business Analysts &amp; Office Managers<br>
+    <span style="font-size:0.7rem;">Real Estate Agency · Monthly CRM Export</span>
+</div>
+""", unsafe_allow_html=True)
+
 # ─────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────
@@ -292,7 +338,7 @@ with tab_a:
             "Non-Null Count": df.notnull().sum().values,
             "Sample Value": [str(df[c].dropna().iloc[0]) if df[c].dropna().shape[0] > 0 else "—" for c in df.columns],
         })
-        st.dataframe(dtype_df, use_container_width=True, hide_index=True)
+        show_table(dtype_df)
 
         # ── Panel 3: Basic Summary Stats
         st.markdown('<div class="section-header">3 · Basic Summary Stats</div>', unsafe_allow_html=True)
@@ -302,13 +348,13 @@ with tab_a:
             if num_profile.empty:
                 st.info("No numeric columns found.")
             else:
-                st.dataframe(num_profile.round(3), use_container_width=True, hide_index=True)
+                show_table(num_profile.round(3))
         with st3_tab2:
             cat_profile = profile_categorical(df)
             if cat_profile.empty:
                 st.info("No categorical columns found.")
             else:
-                st.dataframe(cat_profile, use_container_width=True, hide_index=True)
+                show_table(cat_profile)
 
         # ── Panel 4: Missing Values
         st.markdown('<div class="section-header">4 · Missing Values by Column</div>', unsafe_allow_html=True)
@@ -317,7 +363,7 @@ with tab_a:
         if miss_df_filtered.empty:
             st.success("✅ No missing values detected.")
         else:
-            st.dataframe(miss_df_filtered, use_container_width=True, hide_index=True)
+            show_table(miss_df_filtered)
             fig, ax = plt.subplots(figsize=(8, 2.5))
             ax.barh(miss_df_filtered["Column"], miss_df_filtered["Missing %"], color="#2563eb", alpha=0.8)
             ax.set_xlabel("Missing %")
@@ -332,7 +378,7 @@ with tab_a:
         st.markdown(f'<div class="metric-card"><h4>Duplicate Rows</h4><p>{dup_count:,}</p></div>', unsafe_allow_html=True)
         if dup_count > 0:
             if st.checkbox("Show duplicate rows"):
-                st.dataframe(df[df.duplicated(keep=False)].head(200), use_container_width=True)
+                show_table(df[df.duplicated(keep=False)].head(200))
     else:
         st.info("👆 Upload a file or paste a Google Sheets URL to get started.")
 
@@ -402,7 +448,7 @@ Return ONLY the JSON array, no markdown, no extra text."""
             miss_summary = profile_missing(df)
             cols_with_missing = miss_summary[miss_summary["Missing Count"] > 0]["Column"].tolist()
 
-            st.dataframe(miss_summary[miss_summary["Missing Count"] > 0], use_container_width=True, hide_index=True)
+            show_table(miss_summary[miss_summary["Missing Count"] > 0])
 
             if not cols_with_missing:
                 st.success("No missing values.")
@@ -480,8 +526,8 @@ Return ONLY the JSON array, no markdown, no extra text."""
 
             if dup_count > 0:
                 if st.checkbox("Show duplicate groups"):
-                    st.dataframe(df[df.duplicated(subset=subset, keep=False)].sort_values(
-                        by=subset or df.columns.tolist()), use_container_width=True)
+                    show_table(df[df.duplicated(subset=subset, keep=False)].sort_values(
+                        by=subset or df.columns.tolist()))
 
                 keep = st.selectbox("Keep which duplicate?", ["first", "last"], key="dup_keep")
                 if st.button("Remove Duplicates", key="dup_apply"):
@@ -666,7 +712,7 @@ Return ONLY the JSON array, no markdown, no extra text."""
                 if scale_cols:
                     before_stats = df[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
                     st.write("**Before stats:**")
-                    st.dataframe(before_stats, use_container_width=True)
+                    show_table(before_stats)
 
                 if scale_cols and st.button("Apply Scaling", key="scale_apply"):
                     push_history()
@@ -682,7 +728,7 @@ Return ONLY the JSON array, no markdown, no extra text."""
                         st.session_state.df_working = wdf
                         after_stats = wdf[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
                         st.write("**After stats:**")
-                        st.dataframe(after_stats, use_container_width=True)
+                        show_table(after_stats)
                         log_step("scale_columns", {"method": scale_method, "columns": scale_cols}, scale_cols)
                         st.success(f"✅ Scaled {len(scale_cols)} column(s).")
                         st.rerun()
@@ -802,7 +848,7 @@ Return ONLY the JSON array, no markdown, no extra text."""
 
             if not violations_df.empty:
                 st.markdown(f'<span class="violation-badge">⚠️ {len(violations_df)} violations found</span>', unsafe_allow_html=True)
-                st.dataframe(violations_df.head(200), use_container_width=True)
+                show_table(violations_df.head(200))
                 viol_csv = violations_df.to_csv(index=False).encode("utf-8")
                 st.download_button("📥 Export Violations CSV", viol_csv, "violations.csv", "text/csv")
             elif "val_num_check" in st.session_state or "val_cat_check" in st.session_state or "val_null_check" in st.session_state:
@@ -812,7 +858,7 @@ Return ONLY the JSON array, no markdown, no extra text."""
         st.markdown("---")
         st.markdown('<div class="section-header">Current Working Dataset</div>', unsafe_allow_html=True)
         st.caption(f"Shape: {st.session_state.df_working.shape[0]:,} rows × {st.session_state.df_working.shape[1]} cols")
-        st.dataframe(st.session_state.df_working.head(100), use_container_width=True)
+        show_table(st.session_state.df_working.head(100))
 
 # ══════════════════════════════════════════════
 # PAGE C — VISUALIZATION STUDIO
@@ -1036,7 +1082,7 @@ with tab_d:
                     "Source": source_label,
                 })
             report_df = pd.DataFrame(report_rows)
-            st.dataframe(report_df, use_container_width=True, hide_index=True)
+            show_table(report_df)
 
             # ── Recipe JSON Export
             st.markdown("---")
