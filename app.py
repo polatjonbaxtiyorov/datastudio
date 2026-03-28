@@ -103,6 +103,7 @@ def init_session():
         "recipe": [],
         "ai_enabled": False,
         "openai_key": "",
+        "upload_key": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -127,9 +128,16 @@ def push_history():
     st.session_state.df_history.append(st.session_state.df_working.copy())
 
 def reset_session():
-    st.session_state.df_working = st.session_state.df_original.copy()
+    st.session_state.df_original = None
+    st.session_state.df_working = None
     st.session_state.df_history = []
     st.session_state.recipe = []
+    st.session_state.upload_key += 1          # forces file_uploader + text_input to remount fresh
+    # clear chart state too
+    st.session_state.pop("last_chart_fig", None)
+    st.session_state.pop("last_chart_is_plotly", None)
+    st.session_state.pop("ai_chat_history", None)
+    st.session_state.pop("ai_pending_suggestions", None)
 
 def undo_last():
     if st.session_state.df_history:
@@ -279,11 +287,21 @@ tab_a, tab_b, tab_c, tab_d = st.tabs([
 with tab_a:
     st.markdown("## 📁 Upload & Overview")
 
+    _uk = st.session_state.upload_key
     col_upload, col_sheets = st.columns([1, 1])
     with col_upload:
-        uploaded_file = st.file_uploader("Upload CSV / Excel / JSON", type=["csv", "xlsx", "xls", "json"])
+        uploaded_file = st.file_uploader(
+            "Drag & Drop your file here, or Browse Files",
+            type=["csv", "xlsx", "xls", "json"],
+            help="Supported formats: CSV, Excel (.xlsx/.xls), JSON",
+            key=f"file_uploader_{_uk}"
+        )
     with col_sheets:
-        sheets_url = st.text_input("Or paste Google Sheets public URL", placeholder="https://docs.google.com/spreadsheets/d/...")
+        sheets_url = st.text_input(
+            "Or paste Google Sheets public URL",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key=f"sheets_url_{_uk}"
+        )
 
     load_error = None
     if uploaded_file:
@@ -1001,173 +1019,180 @@ with tab_c:
         dt_cols_list = datetime_cols(df)
         all_cols = df.columns.tolist()
 
-        # ── VISUALIZATION STUDIO — 3 sections + chart output
+        # ── VISUALIZATION STUDIO — 30/70 split
+        left_col, right_col = st.columns([3, 7], gap="large")
 
-        # ── Section 1: Chart Type
-        st.markdown('<div class="section-header">① Chart Type</div>', unsafe_allow_html=True)
-        chart_type = st.selectbox("Select chart type", [
-            "Histogram",
-            "Box Plot",
-            "Scatter Plot",
-            "Line Chart",
-            "Bar Chart (Grouped)",
-            "Heatmap / Correlation Matrix",
-        ], key="chart_type")
+        with left_col:
+            # ── Section 1: Chart Type
+            st.markdown('<div class="section-header">① Chart Type</div>', unsafe_allow_html=True)
+            chart_type = st.selectbox("Select chart type", [
+                "Histogram",
+                "Box Plot",
+                "Scatter Plot",
+                "Line Chart",
+                "Bar Chart (Grouped)",
+                "Heatmap / Correlation Matrix",
+            ], key="chart_type")
 
-        st.markdown("---")
+            st.markdown("---")
 
-        # ── Section 2: Axes
-        st.markdown('<div class="section-header">② Axes & Options</div>', unsafe_allow_html=True)
+            # ── Section 2: Axes & Options
+            st.markdown('<div class="section-header">② Axes & Options</div>', unsafe_allow_html=True)
 
-        x_col = y_col = color_col = agg_method = None
-        top_n = None
-        bins = 20
-        heatmap_cols = []
+            x_col = y_col = color_col = agg_method = None
+            top_n = None
+            bins = 20
+            heatmap_cols = []
+            chart_ok = True
+            chart_warn = ""
 
-        # Validate column availability for chosen chart type
-        chart_ok = True
-        chart_warn = ""
-
-        if chart_type == "Histogram":
-            if not num_cols_list:
-                chart_ok = False
-                chart_warn = "Histogram requires at least one numeric column. None found in current dataset."
-            else:
-                a1, a2 = st.columns(2)
-                with a1:
-                    x_col = st.selectbox("Column (numeric)", num_cols_list, key="hist_x")
-                with a2:
-                    bins = st.slider("Bins", 5, 100, 20, key="hist_bins")
-
-        elif chart_type == "Box Plot":
-            if not num_cols_list:
-                chart_ok = False
-                chart_warn = "Box Plot requires at least one numeric column. None found in current dataset."
-            else:
-                a1, a2 = st.columns(2)
-                with a1:
-                    y_col = st.selectbox("Numeric column (Y)", num_cols_list, key="box_y")
-                with a2:
-                    x_col = st.selectbox("Group by (X, optional)", ["(none)"] + cat_cols_list, key="box_x")
-
-        elif chart_type == "Scatter Plot":
-            if len(num_cols_list) < 2:
-                chart_ok = False
-                chart_warn = "Scatter Plot requires at least 2 numeric columns. Not enough found."
-            else:
-                a1, a2 = st.columns(2)
-                with a1:
-                    x_col = st.selectbox("X axis (numeric)", num_cols_list, key="scatter_x")
-                with a2:
-                    y_col = st.selectbox("Y axis (numeric)", [c for c in num_cols_list if c != x_col] or num_cols_list, key="scatter_y")
-                a3, a4 = st.columns(2)
-                with a3:
-                    color_col = st.selectbox("Color by (optional)", ["(none)"] + cat_cols_list, key="scatter_color")
-                with a4:
-                    agg_method = st.selectbox("Aggregation", ["None (raw)", "mean", "sum", "count", "median"], key="scatter_agg")
-
-        elif chart_type == "Line Chart":
-            all_x_cols = dt_cols_list + num_cols_list + cat_cols_list
-            if not all_x_cols or not num_cols_list:
-                chart_ok = False
-                chart_warn = "Line Chart requires at least one column for X and one numeric column for Y."
-            else:
-                a1, a2 = st.columns(2)
-                with a1:
-                    x_col = st.selectbox("X axis", all_x_cols, key="line_x")
-                with a2:
-                    y_col = st.selectbox("Y axis (numeric)", num_cols_list, key="line_y")
-                a3, a4 = st.columns(2)
-                with a3:
-                    color_col = st.selectbox("Group by (optional)", ["(none)"] + cat_cols_list, key="line_color")
-                with a4:
-                    agg_method = st.selectbox("Aggregation", ["sum", "mean", "count", "median"], key="line_agg", index=0)
-
-        elif chart_type == "Bar Chart (Grouped)":
-            if not cat_cols_list and not num_cols_list:
-                chart_ok = False
-                chart_warn = "Bar Chart requires at least one categorical and one numeric column."
-            else:
-                x_options = cat_cols_list + num_cols_list
-                a1, a2 = st.columns(2)
-                with a1:
-                    x_col = st.selectbox("X axis (category)", x_options, key="bar_x")
-                with a2:
-                    y_col = st.selectbox("Y axis (numeric)", num_cols_list or ["(none)"], key="bar_y")
-                a3, a4 = st.columns(2)
-                with a3:
-                    color_col = st.selectbox("Group by (optional)", ["(none)"] + cat_cols_list, key="bar_color")
-                with a4:
-                    agg_method = st.selectbox("Aggregation", ["sum", "mean", "count", "median"], key="bar_agg", index=0)
-                top_n = st.slider("Show top N categories", 3, 50, 10, key="bar_topn")
-
-        elif chart_type == "Heatmap / Correlation Matrix":
-            if len(num_cols_list) < 2:
-                chart_ok = False
-                chart_warn = "Heatmap requires at least 2 numeric columns. Not enough found."
-            else:
-                heatmap_cols = st.multiselect(
-                    "Select numeric columns",
-                    num_cols_list,
-                    default=num_cols_list[:min(10, len(num_cols_list))],
-                    key="heatmap_cols"
-                )
-                if len(heatmap_cols) < 2:
+            if chart_type == "Histogram":
+                if not num_cols_list:
                     chart_ok = False
-                    chart_warn = "Please select at least 2 columns for the correlation matrix."
+                    chart_warn = "Histogram requires at least one numeric column. None found."
+                else:
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        x_col = st.selectbox("Column (numeric)", num_cols_list, key="hist_x")
+                    with a2:
+                        bins = st.slider("Bins", 5, 100, 20, key="hist_bins")
 
-        chart_title = st.text_input("Chart title (optional)", key="chart_title")
+            elif chart_type == "Box Plot":
+                if not num_cols_list:
+                    chart_ok = False
+                    chart_warn = "Box Plot requires at least one numeric column."
+                else:
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        y_col = st.selectbox("Y (numeric)", num_cols_list, key="box_y")
+                    with a2:
+                        x_col = st.selectbox("Group by X (optional)", ["(none)"] + cat_cols_list, key="box_x")
 
-        st.markdown("---")
+            elif chart_type == "Scatter Plot":
+                if len(num_cols_list) < 2:
+                    chart_ok = False
+                    chart_warn = "Scatter Plot requires at least 2 numeric columns."
+                else:
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        x_col = st.selectbox("X (numeric)", num_cols_list, key="scatter_x")
+                    with a2:
+                        y_col = st.selectbox("Y (numeric)", [c for c in num_cols_list if c != x_col] or num_cols_list, key="scatter_y")
+                    a3, a4 = st.columns(2)
+                    with a3:
+                        color_col = st.selectbox("Color by (optional)", ["(none)"] + cat_cols_list, key="scatter_color")
+                    with a4:
+                        agg_method = st.selectbox("Aggregation", ["None (raw)", "mean", "sum", "count", "median"], key="scatter_agg")
 
-        # ── Section 3: Filters (toggle)
-        st.markdown('<div class="section-header">③ Filters</div>', unsafe_allow_html=True)
-        show_filters = st.toggle("⚙ Show Filters", value=False, key="show_filters")
+            elif chart_type == "Line Chart":
+                all_x_cols = dt_cols_list + num_cols_list + cat_cols_list
+                if not all_x_cols or not num_cols_list:
+                    chart_ok = False
+                    chart_warn = "Line Chart requires at least one X column and one numeric Y column."
+                else:
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        x_col = st.selectbox("X axis", all_x_cols, key="line_x")
+                    with a2:
+                        y_col = st.selectbox("Y (numeric)", num_cols_list, key="line_y")
+                    a3, a4 = st.columns(2)
+                    with a3:
+                        color_col = st.selectbox("Group by (optional)", ["(none)"] + cat_cols_list, key="line_color")
+                    with a4:
+                        agg_method = st.selectbox("Aggregation", ["sum", "mean", "count", "median"], key="line_agg", index=0)
 
-        plot_df = df.copy()
-        if show_filters:
-            f1, f2 = st.columns(2)
-            with f1:
-                filter_cat_col = st.selectbox("Filter by category", ["(none)"] + cat_cols_list, key="filter_cat_col")
-                if filter_cat_col != "(none)":
-                    filter_cat_vals = st.multiselect(
-                        "Keep values",
-                        sorted(df[filter_cat_col].dropna().unique().tolist()),
-                        key="filter_cat_vals"
+            elif chart_type == "Bar Chart (Grouped)":
+                if not num_cols_list:
+                    chart_ok = False
+                    chart_warn = "Bar Chart requires at least one numeric column."
+                else:
+                    x_options = cat_cols_list + num_cols_list
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        x_col = st.selectbox("X (category)", x_options, key="bar_x")
+                    with a2:
+                        y_col = st.selectbox("Y (numeric)", num_cols_list, key="bar_y")
+                    a3, a4 = st.columns(2)
+                    with a3:
+                        color_col = st.selectbox("Group by (optional)", ["(none)"] + cat_cols_list, key="bar_color")
+                    with a4:
+                        agg_method = st.selectbox("Aggregation", ["sum", "mean", "count", "median"], key="bar_agg", index=0)
+                    top_n = st.slider("Top N categories", 3, 50, 10, key="bar_topn")
+
+            elif chart_type == "Heatmap / Correlation Matrix":
+                if len(num_cols_list) < 2:
+                    chart_ok = False
+                    chart_warn = "Heatmap requires at least 2 numeric columns."
+                else:
+                    heatmap_cols = st.multiselect(
+                        "Select numeric columns",
+                        num_cols_list,
+                        default=num_cols_list[:min(10, len(num_cols_list))],
+                        key="heatmap_cols"
                     )
-                    if filter_cat_vals:
-                        plot_df = plot_df[plot_df[filter_cat_col].isin(filter_cat_vals)]
-            with f2:
-                filter_num_col = st.selectbox("Filter by numeric range", ["(none)"] + num_cols_list, key="filter_num_col")
-                if filter_num_col != "(none)":
-                    col_min = float(df[filter_num_col].min())
-                    col_max = float(df[filter_num_col].max())
-                    if col_min < col_max:
-                        filter_range = st.slider("Range", col_min, col_max, (col_min, col_max), key="filter_range")
-                        plot_df = plot_df[(plot_df[filter_num_col] >= filter_range[0]) & (plot_df[filter_num_col] <= filter_range[1])]
+                    if len(heatmap_cols) < 2:
+                        chart_ok = False
+                        chart_warn = "Select at least 2 columns for the correlation matrix."
 
-        st.markdown("---")
+            chart_title = st.text_input("Chart title (optional)", key="chart_title")
 
-        # ── Generate Button
-        generate_clicked = st.button("📊 Generate Chart", use_container_width=True, key="generate_chart", type="primary")
+            st.markdown("---")
 
-        # ── Chart Output
-        st.markdown('<div class="section-header">Chart Output</div>', unsafe_allow_html=True)
+            # ── Section 3: Filters (toggle)
+            st.markdown('<div class="section-header">③ Filters</div>', unsafe_allow_html=True)
+            show_filters = st.toggle("⚙ Show Filters", value=False, key="show_filters")
 
-        if not generate_clicked and "last_chart_fig" not in st.session_state:
-            st.info("Configure your chart settings above and click **Generate Chart**.")
+            plot_df = df.copy()
+            if show_filters:
+                f1, f2 = st.columns(2)
+                with f1:
+                    filter_cat_col = st.selectbox("Filter by category", ["(none)"] + cat_cols_list, key="filter_cat_col")
+                    if filter_cat_col != "(none)":
+                        filter_cat_vals = st.multiselect(
+                            "Keep values",
+                            sorted(df[filter_cat_col].dropna().unique().tolist()),
+                            key="filter_cat_vals"
+                        )
+                        if filter_cat_vals:
+                            plot_df = plot_df[plot_df[filter_cat_col].isin(filter_cat_vals)]
+                with f2:
+                    filter_num_col = st.selectbox("Filter by numeric range", ["(none)"] + num_cols_list, key="filter_num_col")
+                    if filter_num_col != "(none)":
+                        col_min = float(df[filter_num_col].min())
+                        col_max = float(df[filter_num_col].max())
+                        if col_min < col_max:
+                            filter_range = st.slider("Range", col_min, col_max, (col_min, col_max), key="filter_range")
+                            plot_df = plot_df[(plot_df[filter_num_col] >= filter_range[0]) & (plot_df[filter_num_col] <= filter_range[1])]
 
-        if not chart_ok and generate_clicked:
-            st.warning(f"⚠️ Cannot generate this chart: {chart_warn}")
+            st.markdown("---")
+            generate_clicked = st.button("📊 Generate Chart", use_container_width=True, key="generate_chart", type="primary")
 
-        elif generate_clicked and chart_ok:
-            st.session_state.pop("last_chart_fig", None)
-            st.session_state.pop("last_chart_is_plotly", None)
-            try:
-                current_fig = None
-                is_plotly = False
+        # ── RIGHT COLUMN — Chart Output (70%)
+        with right_col:
+            st.markdown('<div class="section-header">Chart Output</div>', unsafe_allow_html=True)
 
-                # Shared plotly layout updates for bold axis labels
+            if not generate_clicked and "last_chart_fig" not in st.session_state:
+                st.info("Configure your chart on the left and click **📊 Generate Chart**.")
+
+            if not chart_ok and generate_clicked:
+                st.warning(f"⚠️ Cannot generate this chart: {chart_warn}")
+
+            elif generate_clicked and chart_ok:
+                st.session_state.pop("last_chart_params", None)
+                st.session_state.pop("last_export_fig", None)
+
+                # Colour palette for matplotlib (matches Plotly default)
+                PALETTE = ["#636EFA","#EF553B","#00CC96","#AB63FA","#FFA15A",
+                           "#19D3F3","#FF6692","#B6E880","#FF97FF","#FECB52"]
+
+                def styled_ax(ax, title, xlabel, ylabel):
+                    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+                    ax.set_xlabel(xlabel, fontweight="bold", fontsize=12)
+                    ax.set_ylabel(ylabel, fontweight="bold", fontsize=12)
+                    ax.spines[["top","right"]].set_visible(False)
+                    ax.set_facecolor("#f8f9fb")
+                    ax.tick_params(labelsize=10)
+
                 def apply_bold_axes(fig):
                     fig.update_layout(
                         xaxis=dict(title_font=dict(size=14, family="DM Sans", color="#111827"),
@@ -1175,120 +1200,202 @@ with tab_c:
                         yaxis=dict(title_font=dict(size=14, family="DM Sans", color="#111827"),
                                    tickfont=dict(size=11)),
                         title_font=dict(size=15, family="DM Sans"),
-                        paper_bgcolor="white",
-                        plot_bgcolor="white",
+                        paper_bgcolor="white", plot_bgcolor="white",
                         margin=dict(l=60, r=30, t=60, b=60),
                     )
                     return fig
 
-                if chart_type == "Histogram":
-                    fig, ax = plt.subplots(figsize=(10, 5))
-                    ax.hist(plot_df[x_col].dropna(), bins=bins, color="#2563eb", alpha=0.85, edgecolor="white")
-                    ax.set_xlabel(x_col, fontweight="bold", fontsize=13)
-                    ax.set_ylabel("Count", fontweight="bold", fontsize=13)
-                    ax.set_title(chart_title or f"Distribution of {x_col}", fontsize=14, fontweight="bold")
-                    ax.spines[["top", "right"]].set_visible(False)
-                    ax.set_facecolor("#f8f9fb")
-                    fig.patch.set_facecolor("white")
-                    st.pyplot(fig, use_container_width=True)
-                    current_fig = fig
+                try:
+                    export_fig = None   # always matplotlib, used for PNG
+                    title_str = chart_title or ""
 
-                elif chart_type == "Box Plot":
-                    if x_col and x_col != "(none)":
-                        fig = px.box(plot_df, x=x_col, y=y_col,
-                                     title=chart_title or f"{y_col} by {x_col}", color=x_col)
-                    else:
-                        fig = px.box(plot_df, y=y_col, title=chart_title or f"Box Plot: {y_col}")
-                    fig.update_layout(xaxis_title_text=x_col if x_col and x_col != "(none)" else "",
-                                      yaxis_title_text=y_col)
-                    fig = apply_bold_axes(fig)
-                    st.plotly_chart(fig, use_container_width=True)
-                    current_fig = fig; is_plotly = True
+                    # ── Histogram ─────────────────────────────
+                    if chart_type == "Histogram":
+                        # display
+                        fig_d, ax_d = plt.subplots(figsize=(10, 5))
+                        ax_d.hist(plot_df[x_col].dropna(), bins=bins,
+                                  color=PALETTE[0], alpha=0.85, edgecolor="white")
+                        styled_ax(ax_d, title_str or f"Distribution of {x_col}", x_col, "Count")
+                        fig_d.patch.set_facecolor("white")
+                        st.pyplot(fig_d, use_container_width=True)
+                        export_fig = fig_d
 
-                elif chart_type == "Scatter Plot":
-                    scatter_df = plot_df.copy()
-                    if agg_method and agg_method != "None (raw)":
-                        grp_cols = [x_col] + ([color_col] if color_col and color_col != "(none)" else [])
-                        scatter_df = scatter_df.groupby(grp_cols)[y_col].agg(agg_method).reset_index()
-                    c = color_col if color_col and color_col != "(none)" else None
-                    fig = px.scatter(scatter_df, x=x_col, y=y_col, color=c,
-                                     title=chart_title or f"{x_col} vs {y_col}", opacity=0.75)
-                    fig = apply_bold_axes(fig)
-                    st.plotly_chart(fig, use_container_width=True)
-                    current_fig = fig; is_plotly = True
+                    # ── Box Plot ───────────────────────────────
+                    elif chart_type == "Box Plot":
+                        # display (Plotly — interactive)
+                        if x_col and x_col != "(none)":
+                            pfig = px.box(plot_df, x=x_col, y=y_col,
+                                          title=title_str or f"{y_col} by {x_col}", color=x_col,
+                                          color_discrete_sequence=PALETTE)
+                        else:
+                            pfig = px.box(plot_df, y=y_col,
+                                          title=title_str or f"Box Plot: {y_col}")
+                        st.plotly_chart(apply_bold_axes(pfig), use_container_width=True)
 
-                elif chart_type == "Line Chart":
-                    line_df = plot_df.copy()
-                    grp_cols = [x_col] + ([color_col] if color_col and color_col != "(none)" else [])
-                    try:
-                        line_df = line_df.groupby(grp_cols)[y_col].agg(agg_method).reset_index()
-                        line_df = line_df.sort_values(x_col)
-                    except Exception:
-                        pass
-                    c = color_col if color_col and color_col != "(none)" else None
-                    fig = px.line(line_df, x=x_col, y=y_col, color=c,
-                                  title=chart_title or f"{y_col} over {x_col}", markers=True)
-                    fig = apply_bold_axes(fig)
-                    st.plotly_chart(fig, use_container_width=True)
-                    current_fig = fig; is_plotly = True
+                        # export (matplotlib)
+                        groups = plot_df[x_col].dropna().unique() if (x_col and x_col != "(none)") else [None]
+                        fig_e, ax_e = plt.subplots(figsize=(10, 5))
+                        if x_col and x_col != "(none)":
+                            data_list = [plot_df[plot_df[x_col]==g][y_col].dropna().values for g in groups]
+                            bp = ax_e.boxplot(data_list, patch_artist=True, labels=[str(g) for g in groups])
+                            for patch, color in zip(bp["boxes"], PALETTE):
+                                patch.set_facecolor(color)
+                                patch.set_alpha(0.8)
+                        else:
+                            bp = ax_e.boxplot(plot_df[y_col].dropna().values, patch_artist=True)
+                            bp["boxes"][0].set_facecolor(PALETTE[0])
+                        styled_ax(ax_e, title_str or f"Box Plot: {y_col}",
+                                  x_col if x_col and x_col != "(none)" else "", y_col)
+                        fig_e.patch.set_facecolor("white")
+                        export_fig = fig_e
 
-                elif chart_type == "Bar Chart (Grouped)":
-                    bar_df = plot_df.copy()
-                    grp_cols = [x_col] + ([color_col] if color_col and color_col != "(none)" else [])
-                    bar_df = bar_df.groupby(grp_cols)[y_col].agg(agg_method).reset_index()
-                    top_vals = bar_df.groupby(x_col)[y_col].sum().nlargest(top_n).index
-                    bar_df = bar_df[bar_df[x_col].isin(top_vals)].sort_values(y_col, ascending=False)
-                    c = color_col if color_col and color_col != "(none)" else None
-                    fig = px.bar(bar_df, x=x_col, y=y_col, color=c, barmode="group",
-                                 title=chart_title or f"{agg_method.title()} of {y_col} by {x_col} (Top {top_n})")
-                    fig = apply_bold_axes(fig)
-                    st.plotly_chart(fig, use_container_width=True)
-                    current_fig = fig; is_plotly = True
+                    # ── Scatter Plot ───────────────────────────
+                    elif chart_type == "Scatter Plot":
+                        scatter_df = plot_df.copy()
+                        if agg_method and agg_method != "None (raw)":
+                            grp = [x_col]+([color_col] if color_col and color_col!="(none)" else [])
+                            scatter_df = scatter_df.groupby(grp)[y_col].agg(agg_method).reset_index()
+                        c = color_col if color_col and color_col != "(none)" else None
 
-                elif chart_type == "Heatmap / Correlation Matrix":
-                    corr = plot_df[heatmap_cols].corr()
-                    fig, ax = plt.subplots(figsize=(10, 7))
-                    sns.heatmap(corr, annot=True, fmt=".2f", cmap="RdBu_r",
-                                center=0, ax=ax, linewidths=0.5,
-                                annot_kws={"size": 10})
-                    ax.set_title(chart_title or "Correlation Matrix", fontsize=14, fontweight="bold")
-                    ax.set_xticklabels(ax.get_xticklabels(), fontweight="bold", fontsize=10, rotation=30, ha="right")
-                    ax.set_yticklabels(ax.get_yticklabels(), fontweight="bold", fontsize=10, rotation=0)
-                    fig.patch.set_facecolor("white")
-                    st.pyplot(fig, use_container_width=True)
-                    current_fig = fig
+                        # display
+                        pfig = px.scatter(scatter_df, x=x_col, y=y_col, color=c,
+                                          title=title_str or f"{x_col} vs {y_col}",
+                                          opacity=0.75, color_discrete_sequence=PALETTE)
+                        st.plotly_chart(apply_bold_axes(pfig), use_container_width=True)
 
-                # Store for export
-                if current_fig is not None:
-                    st.session_state["last_chart_fig"] = current_fig
-                    st.session_state["last_chart_is_plotly"] = is_plotly
+                        # export
+                        fig_e, ax_e = plt.subplots(figsize=(10, 5))
+                        if c and c in scatter_df.columns:
+                            for idx, (grp_val, grp_df) in enumerate(scatter_df.groupby(c)):
+                                ax_e.scatter(grp_df[x_col], grp_df[y_col],
+                                             color=PALETTE[idx % len(PALETTE)],
+                                             alpha=0.75, label=str(grp_val), s=40)
+                            ax_e.legend(title=c, fontsize=9)
+                        else:
+                            ax_e.scatter(scatter_df[x_col], scatter_df[y_col],
+                                         color=PALETTE[0], alpha=0.75, s=40)
+                        styled_ax(ax_e, title_str or f"{x_col} vs {y_col}", x_col, y_col)
+                        fig_e.patch.set_facecolor("white")
+                        export_fig = fig_e
 
-            except Exception as e:
-                st.error(f"⚠️ Could not generate chart: {e}. Try a different column combination.")
-            finally:
-                plt.close("all")
+                    # ── Line Chart ─────────────────────────────
+                    elif chart_type == "Line Chart":
+                        line_df = plot_df.copy()
+                        grp = [x_col]+([color_col] if color_col and color_col!="(none)" else [])
+                        try:
+                            line_df = line_df.groupby(grp)[y_col].agg(agg_method).reset_index()
+                            line_df = line_df.sort_values(x_col)
+                        except Exception:
+                            pass
+                        c = color_col if color_col and color_col != "(none)" else None
 
-        # PNG export — persists after generate
-        if "last_chart_fig" in st.session_state:
-            buf = io.BytesIO()
-            export_ok = False
-            try:
-                if st.session_state.get("last_chart_is_plotly"):
-                    img_bytes = st.session_state["last_chart_fig"].to_image(
-                        format="png", scale=2, width=1200, height=700)
-                    buf.write(img_bytes)
-                    export_ok = True
-                else:
-                    st.session_state["last_chart_fig"].savefig(
-                        buf, format="png", bbox_inches="tight", dpi=150,
-                        facecolor="white")
-                    export_ok = True
-            except Exception as e:
-                st.caption(f"PNG export unavailable: {e}")
-            if export_ok:
-                buf.seek(0)
-                st.download_button("📥 Export Chart as PNG", buf, "chart.png",
-                                   "image/png", key="chart_png")
+                        # display
+                        pfig = px.line(line_df, x=x_col, y=y_col, color=c,
+                                       title=title_str or f"{y_col} over {x_col}",
+                                       markers=True, color_discrete_sequence=PALETTE)
+                        st.plotly_chart(apply_bold_axes(pfig), use_container_width=True)
+
+                        # export
+                        fig_e, ax_e = plt.subplots(figsize=(10, 5))
+                        if c and c in line_df.columns:
+                            for idx, (grp_val, grp_df) in enumerate(line_df.groupby(c)):
+                                grp_df_s = grp_df.sort_values(x_col)
+                                ax_e.plot(grp_df_s[x_col].astype(str), grp_df_s[y_col],
+                                          color=PALETTE[idx % len(PALETTE)],
+                                          marker="o", linewidth=2, label=str(grp_val))
+                            ax_e.legend(title=c, fontsize=9)
+                        else:
+                            line_df_s = line_df.sort_values(x_col)
+                            ax_e.plot(line_df_s[x_col].astype(str), line_df_s[y_col],
+                                      color=PALETTE[0], marker="o", linewidth=2)
+                        ax_e.tick_params(axis="x", rotation=30)
+                        styled_ax(ax_e, title_str or f"{y_col} over {x_col}", x_col, y_col)
+                        fig_e.patch.set_facecolor("white")
+                        export_fig = fig_e
+
+                    # ── Bar Chart ──────────────────────────────
+                    elif chart_type == "Bar Chart (Grouped)":
+                        bar_df = plot_df.copy()
+                        grp = [x_col]+([color_col] if color_col and color_col!="(none)" else [])
+                        bar_df = bar_df.groupby(grp)[y_col].agg(agg_method).reset_index()
+                        top_vals = bar_df.groupby(x_col)[y_col].sum().nlargest(top_n).index
+                        bar_df = bar_df[bar_df[x_col].isin(top_vals)].sort_values(y_col, ascending=False)
+                        c = color_col if color_col and color_col != "(none)" else None
+
+                        # display
+                        pfig = px.bar(bar_df, x=x_col, y=y_col, color=c, barmode="group",
+                                      title=title_str or f"{agg_method.title()} of {y_col} by {x_col} (Top {top_n})",
+                                      color_discrete_sequence=PALETTE)
+                        st.plotly_chart(apply_bold_axes(pfig), use_container_width=True)
+
+                        # export
+                        fig_e, ax_e = plt.subplots(figsize=(12, 5))
+                        if c and c in bar_df.columns:
+                            groups = bar_df[c].unique()
+                            cats = bar_df[x_col].unique()
+                            x_idx = np.arange(len(cats))
+                            width = 0.8 / max(len(groups), 1)
+                            for i, grp_val in enumerate(groups):
+                                grp_df = bar_df[bar_df[c]==grp_val].set_index(x_col)
+                                vals = [grp_df[y_col].get(cat, 0) for cat in cats]
+                                ax_e.bar(x_idx + i*width, vals, width=width,
+                                         color=PALETTE[i % len(PALETTE)],
+                                         alpha=0.88, label=str(grp_val))
+                            ax_e.set_xticks(x_idx + width*(len(groups)-1)/2)
+                            ax_e.set_xticklabels([str(c_) for c_ in cats], rotation=30, ha="right")
+                            ax_e.legend(title=c, fontsize=9)
+                        else:
+                            cats = bar_df[x_col].astype(str).tolist()
+                            vals = bar_df[y_col].tolist()
+                            colors = [PALETTE[i % len(PALETTE)] for i in range(len(cats))]
+                            ax_e.bar(cats, vals, color=colors, alpha=0.88)
+                            ax_e.tick_params(axis="x", rotation=30)
+                        styled_ax(ax_e, title_str or f"{agg_method.title()} of {y_col} by {x_col}",
+                                  x_col, y_col)
+                        fig_e.tight_layout()
+                        fig_e.patch.set_facecolor("white")
+                        export_fig = fig_e
+
+                    # ── Heatmap ────────────────────────────────
+                    elif chart_type == "Heatmap / Correlation Matrix":
+                        corr = plot_df[heatmap_cols].corr()
+                        fig_d, ax_d = plt.subplots(figsize=(10, 7))
+                        sns.heatmap(corr, annot=True, fmt=".2f", cmap="RdBu_r",
+                                    center=0, ax=ax_d, linewidths=0.5,
+                                    annot_kws={"size": 10})
+                        ax_d.set_title(title_str or "Correlation Matrix",
+                                       fontsize=14, fontweight="bold")
+                        ax_d.set_xticklabels(ax_d.get_xticklabels(),
+                                             fontweight="bold", fontsize=10,
+                                             rotation=30, ha="right")
+                        ax_d.set_yticklabels(ax_d.get_yticklabels(),
+                                             fontweight="bold", fontsize=10, rotation=0)
+                        fig_d.patch.set_facecolor("white")
+                        st.pyplot(fig_d, use_container_width=True)
+                        export_fig = fig_d
+
+                    # Store export figure (always matplotlib)
+                    if export_fig is not None:
+                        st.session_state["last_export_fig"] = export_fig
+
+                except Exception as e:
+                    st.error(f"⚠️ Could not generate chart: {e}. Try a different column combination.")
+                finally:
+                    plt.close("all")
+
+            # PNG export — always matplotlib, always full color
+            if "last_export_fig" in st.session_state:
+                buf = io.BytesIO()
+                try:
+                    st.session_state["last_export_fig"].savefig(
+                        buf, format="png", bbox_inches="tight",
+                        dpi=150, facecolor="white")
+                    buf.seek(0)
+                    st.download_button("📥 Export Chart as PNG", buf, "chart.png",
+                                       "image/png", key="chart_png")
+                except Exception as e:
+                    st.caption(f"PNG export unavailable: {e}")
+
 
 # ══════════════════════════════════════════════
 # PAGE D — EXPORT & REPORT
