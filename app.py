@@ -35,7 +35,6 @@ html, body, [class*="css"] {
 }
 .block-container { padding-top: 3.5rem; padding-bottom: 2rem; }
 
-/* push tab bar down so labels are never clipped */
 .stTabs { margin-top: 0.5rem; }
 [data-testid="stTabBar"] { padding-top: 0.25rem; }
 
@@ -54,7 +53,23 @@ html, body, [class*="css"] {
     border-left: 3px solid #2563eb; padding-left: 0.6rem;
     margin: 0.5rem 0 0.3rem 0;
 }
-/* Tighter spacing inside left viz panel */
+
+.before-after-box {
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-top: 0.75rem;
+}
+.before-after-box h5 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #0369a1;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
 [data-testid="stVerticalBlock"] .stSelectbox,
 [data-testid="stVerticalBlock"] .stSlider,
 [data-testid="stVerticalBlock"] .stTextInput,
@@ -77,20 +92,16 @@ html, body, [class*="css"] {
     border-radius: 4px; padding: 2px 8px; font-size: 0.78rem; font-weight: 600;
 }
 
-/* ── Dataframe global alignment ── */
-/* Left-align all header cells */
 [data-testid="stDataFrame"] th,
 [data-testid="stDataFrame"] [data-testid="glideDataEditor"] .header-cell,
 .stDataFrame thead th {
     text-align: left !important;
     justify-content: flex-start !important;
 }
-/* Left-align text/string cells */
 [data-testid="stDataFrame"] td,
 .stDataFrame tbody td {
     text-align: left !important;
 }
-/* Right-align numeric cells (Streamlit adds dvn-* class for number columns) */
 [data-testid="stDataFrame"] [class*="dvn-"] .cell-wrap--number,
 [data-testid="stDataFrame"] .gdg-cell[data-type="number"] {
     text-align: right !important;
@@ -135,7 +146,6 @@ def push_history():
     st.session_state.df_history.append(st.session_state.df_working.copy())
 
 def reset_session():
-    """Full reset — clears everything including uploaded file, returns to blank page."""
     st.session_state.df_original = None
     st.session_state.df_working = None
     st.session_state.df_history = []
@@ -148,7 +158,6 @@ def reset_session():
     st.session_state.pop("ai_pending_suggestions", None)
 
 def reset_all():
-    """Reset All — restores working df to original, clears actions. Keeps file loaded."""
     if st.session_state.df_original is not None:
         st.session_state.df_working = st.session_state.df_original.copy()
     st.session_state.df_history = []
@@ -170,8 +179,6 @@ def safe_run(func, *args, **kwargs):
         return None, str(e)
 
 def show_table(df, **kwargs):
-    """Render a dataframe with consistent alignment:
-    text columns left-aligned, numeric columns right-aligned."""
     col_cfg = {}
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
@@ -189,6 +196,159 @@ def categorical_cols(df):
 
 def datetime_cols(df):
     return df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
+
+
+# ─────────────────────────────────────────────
+# BEFORE / AFTER SUMMARY HELPERS
+# ─────────────────────────────────────────────
+def show_before_after_metrics(rows_before, rows_after, cols_before, cols_after,
+                               extra_before=None, extra_after=None, extra_label=None):
+    """
+    Renders a clean before/after summary table.
+    extra_before/after: optional scalar (e.g. missing count, outlier count).
+    extra_label: label for the extra metric row.
+    """
+    st.markdown('<div class="before-after-box">', unsafe_allow_html=True)
+    st.markdown('<h5>📊 Before / After Summary</h5>', unsafe_allow_html=True)
+
+    rows_data = {
+        "Metric": ["Rows", "Columns"],
+        "Before": [f"{rows_before:,}", f"{cols_before:,}"],
+        "After":  [f"{rows_after:,}",  f"{cols_after:,}"],
+        "Change": [
+            _change_str(rows_before, rows_after),
+            _change_str(cols_before, cols_after),
+        ],
+    }
+    if extra_label is not None and extra_before is not None and extra_after is not None:
+        rows_data["Metric"].append(extra_label)
+        rows_data["Before"].append(str(extra_before))
+        rows_data["After"].append(str(extra_after))
+        rows_data["Change"].append(_change_str(extra_before, extra_after) if isinstance(extra_before, (int, float)) else "—")
+
+    summary_df = pd.DataFrame(rows_data)
+    st.dataframe(summary_df, hide_index=True, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _change_str(before, after):
+    """Return a coloured delta string."""
+    try:
+        delta = int(after) - int(before)
+        if delta < 0:
+            return f"▼ {abs(delta)}"
+        elif delta > 0:
+            return f"▲ {delta}"
+        return "—"
+    except Exception:
+        return "—"
+
+
+def show_column_changes(df_before, df_after):
+    """Side-by-side column diff — used by Column Operations."""
+    st.markdown('<div class="before-after-box">', unsafe_allow_html=True)
+    st.markdown('<h5>📊 Column Changes</h5>', unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Before")
+        st.dataframe(pd.DataFrame({"Columns Before": df_before.columns.tolist()}),
+                     hide_index=True, use_container_width=True)
+    with c2:
+        st.caption("After")
+        st.dataframe(pd.DataFrame({"Columns After": df_after.columns.tolist()}),
+                     hide_index=True, use_container_width=True)
+
+    before_set = set(df_before.columns)
+    after_set  = set(df_after.columns)
+    added   = after_set - before_set
+    removed = before_set - after_set
+
+    if added:
+        st.success(f"✅ Added: {sorted(added)}")
+    if removed:
+        st.error(f"❌ Removed: {sorted(removed)}")
+    if not added and not removed:
+        st.info("No columns were added or removed — only names or values changed.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def show_dtype_summary(col, dtype_before, dtype_after,
+                        nonnull_before, nonnull_after,
+                        null_before, null_after):
+    """Before/after for data type conversions."""
+    st.markdown('<div class="before-after-box">', unsafe_allow_html=True)
+    st.markdown('<h5>📊 Before / After Summary</h5>', unsafe_allow_html=True)
+
+    summary_df = pd.DataFrame({
+        "Metric":  ["Data Type", "Non-null Values", "Missing Values"],
+        "Before":  [dtype_before, f"{nonnull_before:,}", f"{null_before:,}"],
+        "After":   [dtype_after,  f"{nonnull_after:,}",  f"{null_after:,}"],
+        "Change":  [
+            "—" if dtype_before == dtype_after else f"{dtype_before} → {dtype_after}",
+            _change_str(nonnull_before, nonnull_after),
+            _change_str(null_before, null_after),
+        ],
+    })
+    st.dataframe(summary_df, hide_index=True, use_container_width=True)
+
+    coerced = null_after - null_before
+    if coerced > 0:
+        st.warning(f"⚠️ {coerced} value(s) could not be converted and became NaN/NaT.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def show_categorical_summary(col, action, unique_before, unique_after,
+                              top_before: pd.Series, top_after: pd.Series | None,
+                              new_dummy_cols: list | None = None):
+    """Before/after for categorical operations."""
+    st.markdown('<div class="before-after-box">', unsafe_allow_html=True)
+    st.markdown('<h5>📊 Before / After Summary</h5>', unsafe_allow_html=True)
+    st.write(f"**Column:** `{col}` &nbsp;|&nbsp; **Operation:** `{action}`")
+
+    if isinstance(unique_after, int):
+        meta_df = pd.DataFrame({
+            "Metric": ["Unique Categories"],
+            "Before": [str(unique_before)],
+            "After":  [str(unique_after)],
+            "Change": [_change_str(unique_before, unique_after)],
+        })
+        st.dataframe(meta_df, hide_index=True, use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Top values — Before")
+        st.dataframe(
+            top_before.rename_axis("Category").reset_index(name="Count"),
+            hide_index=True, use_container_width=True
+        )
+    with c2:
+        if top_after is not None:
+            st.caption("Top values — After")
+            st.dataframe(
+                top_after.rename_axis("Category").reset_index(name="Count"),
+                hide_index=True, use_container_width=True
+            )
+        elif new_dummy_cols:
+            st.caption("New dummy columns created")
+            st.dataframe(pd.DataFrame({"Column": new_dummy_cols}),
+                         hide_index=True, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def show_scaling_summary(cols, stats_before: pd.DataFrame, stats_after: pd.DataFrame):
+    """Before/after stats for normalization/scaling."""
+    st.markdown('<div class="before-after-box">', unsafe_allow_html=True)
+    st.markdown('<h5>📊 Scaling — Before / After Statistics</h5>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Before")
+        st.dataframe(stats_before.round(4), use_container_width=True)
+    with c2:
+        st.caption("After")
+        st.dataframe(stats_after.round(4), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ─────────────────────────────────────────────
 # FILE LOADING
@@ -253,7 +413,6 @@ with st.sidebar:
     st.markdown("## 🗂️ DataStudio")
     st.markdown("---")
 
-    # Transformation Log
     if st.session_state.recipe:
         st.markdown("### 📋 Transformation Log")
         for step in st.session_state.recipe:
@@ -274,20 +433,16 @@ with st.sidebar:
                 reset_all()
                 st.rerun()
 
-   
-        # AI Toggle
     st.markdown("### ⚙️ Settings")
     ai_toggle = st.toggle("Enable AI Assistant", value=st.session_state.ai_enabled)
     st.session_state.ai_enabled = ai_toggle
 
     if ai_toggle:
-        # API key from secrets; fallback to session state for local dev
         if not st.session_state.openai_key:
             st.session_state.openai_key = st.secrets.get("OPENAI_API_KEY", "")
         st.markdown('<div class="disclaimer">⚠️ AI suggestions may be imperfect. Always review before applying.</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-
 
 
 # ─────────────────────────────────────────────
@@ -348,7 +503,6 @@ with tab_a:
 
         st.markdown("---")
 
-        # ── Panel 1: Shape
         st.markdown('<div class="section-header">1 · Shape</div>', unsafe_allow_html=True)
         m1, m2, m3 = st.columns(3)
         with m1:
@@ -358,7 +512,6 @@ with tab_a:
         with m3:
             st.markdown(f'<div class="metric-card"><h4>Total Cells</h4><p>{df.shape[0] * df.shape[1]:,}</p></div>', unsafe_allow_html=True)
 
-        # ── Panel 2: Column Names & Dtypes
         st.markdown('<div class="section-header">2 · Column Names & Inferred Dtypes</div>', unsafe_allow_html=True)
         dtype_df = pd.DataFrame({
             "Column": df.columns,
@@ -368,7 +521,6 @@ with tab_a:
         })
         show_table(dtype_df)
 
-        # ── Panel 3: Basic Summary Stats
         st.markdown('<div class="section-header">3 · Basic Summary Stats</div>', unsafe_allow_html=True)
         st3_tab1, st3_tab2 = st.tabs(["Numeric", "Categorical"])
         with st3_tab1:
@@ -384,7 +536,6 @@ with tab_a:
             else:
                 show_table(cat_profile)
 
-        # ── Panel 4: Missing Values
         st.markdown('<div class="section-header">4 · Missing Values by Column</div>', unsafe_allow_html=True)
         miss_df = profile_missing(df)
         miss_df_filtered = miss_df[miss_df["Missing Count"] > 0]
@@ -393,7 +544,6 @@ with tab_a:
         else:
             show_table(miss_df_filtered)
 
-        # ── Panel 5: Duplicates
         st.markdown('<div class="section-header">5 · Duplicates</div>', unsafe_allow_html=True)
         dup_count = df.duplicated().sum()
         st.markdown(f'<div class="metric-card"><h4>Duplicate Rows</h4><p>{dup_count:,}</p></div>', unsafe_allow_html=True)
@@ -402,71 +552,6 @@ with tab_a:
                 show_table(df[df.duplicated(keep=False)].head(200))
     else:
         st.info("👆 Upload a file or paste a Google Sheets URL to get started.")
-
-# ─────────────────────────────────────
-# HELPER: CLEANING SUMMARY
-# ─────────────────────────────────────
-def set_cleaning_summary(before_df, after_df, operation="", method="", focus_cols=None,
-                         before_stats=None, after_stats=None):
-    if focus_cols is None:
-        focus_cols = []
-    if isinstance(focus_cols, str):
-        focus_cols = [focus_cols]
-
-    focus_before = [c for c in focus_cols if c in before_df.columns]
-    focus_after = [c for c in focus_cols if c in after_df.columns]
-
-    if focus_before:
-        before_missing = int(before_df[focus_before].isnull().sum().sum())
-    else:
-        before_missing = int(before_df.isnull().sum().sum())
-
-    if focus_after:
-        after_missing = int(after_df[focus_after].isnull().sum().sum())
-    else:
-        after_missing = int(after_df.isnull().sum().sum())
-
-    st.session_state["last_cleaning_summary"] = {
-        "operation": operation,
-        "method": method,
-        "focus_cols": focus_cols,
-        "before_rows": before_df.shape[0],
-        "after_rows": after_df.shape[0],
-        "before_cols": before_df.shape[1],
-        "after_cols": after_df.shape[1],
-        "before_missing": before_missing,
-        "after_missing": after_missing,
-        "before_stats": before_stats,
-        "after_stats": after_stats,
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-    }
-
-
-def render_cleaning_summary():
-    summary = st.session_state.get("last_cleaning_summary")
-    if not summary:
-        return
-
-    st.markdown("### 📊 Before / After Summary")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rows", f'{summary["before_rows"]:,}', f'{summary["after_rows"] - summary["before_rows"]:+,}')
-    c2.metric("Columns", f'{summary["before_cols"]:,}', f'{summary["after_cols"] - summary["before_cols"]:+,}')
-    c3.metric("Missing Values", f'{summary["before_missing"]:,}', f'{summary["after_missing"] - summary["before_missing"]:+,}')
-    c4.metric("Method", summary["method"] or "—")
-
-    st.caption(f'Last operation: **{summary["operation"]}**')
-
-    if summary.get("before_stats") is not None and summary.get("after_stats") is not None:
-        s1, s2 = st.columns(2)
-        with s1:
-            st.markdown("**Before Statistics**")
-            show_table(summary["before_stats"])
-        with s2:
-            st.markdown("**After Statistics**")
-            show_table(summary["after_stats"])
-
-    st.markdown("---")
 
 
 # ══════════════════════════════════════════════
@@ -480,23 +565,20 @@ with tab_b:
     else:
         df = st.session_state.df_working
 
-        # ── AI Assistant (if enabled)
+        # ── AI Assistant (if enabled) ──────────────────────────────────────────
         if st.session_state.ai_enabled:
             st.markdown('<div class="section-header">🤖 AI Cleaning Assistant</div>', unsafe_allow_html=True)
             st.markdown('<div class="disclaimer">⚠️ AI suggestions may be imperfect. Always review before applying.</div>', unsafe_allow_html=True)
 
-            # Init chat history in session state
             if "ai_chat_history" not in st.session_state:
                 st.session_state["ai_chat_history"] = []
             if "ai_pending_suggestions" not in st.session_state:
                 st.session_state["ai_pending_suggestions"] = []
 
-            # Render chat history
             for msg in st.session_state["ai_chat_history"]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Render pending suggestions (confirm / reject per item)
             if st.session_state["ai_pending_suggestions"]:
                 with st.chat_message("assistant"):
                     st.markdown("Here are the suggested operations. Confirm or reject each one:")
@@ -513,7 +595,6 @@ with tab_b:
                             with c1:
                                 if st.button(f"✅ Apply", key=f"ai_confirm_{i}"):
                                     push_history()
-                                    # Execute the operation directly
                                     try:
                                         op = sug["operation"]
                                         params = sug.get("parameters", {})
@@ -626,7 +707,6 @@ with tab_b:
                                     st.session_state["ai_pending_suggestions"].pop(i)
                                     st.rerun()
 
-            # Chat input box
             ai_prompt = st.chat_input("Describe a cleaning operation, e.g. 'replace nulls in price with median'")
             if ai_prompt:
                 st.session_state["ai_chat_history"].append({"role": "user", "content": ai_prompt})
@@ -652,7 +732,6 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                             max_tokens=1000,
                         )
                         raw = response.choices[0].message.content.strip()
-                        # Strip markdown fences if model added them
                         raw = re.sub(r"```json|```", "", raw).strip()
                         suggestions = json.loads(raw)
                         st.session_state["ai_pending_suggestions"] = suggestions
@@ -685,7 +764,6 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 mv_col = st.selectbox("Select column", cols_with_missing, key="mv_col")
                 col_dtype = str(df[mv_col].dtype)
                 is_numeric = pd.api.types.is_numeric_dtype(df[mv_col])
-                is_datetime = pd.api.types.is_datetime64_any_dtype(df[mv_col])
 
                 action = st.selectbox("Action", [
                     "Drop rows with missing",
@@ -705,37 +783,53 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 if action == "Drop column if missing > threshold %":
                     extra["threshold"] = st.slider("Threshold %", 0, 100, 50, key="mv_thresh")
 
-                # Before preview
-                before_rows = df.shape[0]
+                # Snapshot before values for summary
+                before_rows    = df.shape[0]
+                before_cols    = df.shape[1]
                 before_missing = int(df[mv_col].isnull().sum())
+
+                st.caption(f"Rows: **{before_rows:,}** | Missing in `{mv_col}`: **{before_missing:,}**")
 
                 if st.button("Apply", key="mv_apply"):
                     push_history()
                     try:
-                        wdf = st.session_state.df_working
+                        wdf = st.session_state.df_working.copy()
+
                         if action == "Drop rows with missing":
-                            st.session_state.df_working = wdf.dropna(subset=[mv_col])
+                            wdf = wdf.dropna(subset=[mv_col])
                         elif action == "Drop column if missing > threshold %":
                             pct = wdf[mv_col].isnull().mean() * 100
                             if pct > extra["threshold"]:
-                                st.session_state.df_working = wdf.drop(columns=[mv_col])
+                                wdf = wdf.drop(columns=[mv_col])
                         elif action == "Replace with constant":
-                            st.session_state.df_working[mv_col] = wdf[mv_col].fillna(extra["value"])
+                            wdf[mv_col] = wdf[mv_col].fillna(extra["value"])
                         elif action == "Replace with mean" and is_numeric:
-                            st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mean())
+                            wdf[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mean())
                         elif action == "Replace with median" and is_numeric:
-                            st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].median())
+                            wdf[mv_col] = wdf[mv_col].fillna(wdf[mv_col].median())
                         elif action in ("Replace with mode", "Replace with most frequent"):
-                            st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mode()[0])
+                            wdf[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mode()[0])
                         elif action == "Forward fill":
-                            st.session_state.df_working[mv_col] = wdf[mv_col].ffill()
+                            wdf[mv_col] = wdf[mv_col].ffill()
                         elif action == "Backward fill":
-                            st.session_state.df_working[mv_col] = wdf[mv_col].bfill()
+                            wdf[mv_col] = wdf[mv_col].bfill()
 
-                        after_rows = st.session_state.df_working.shape[0]
-                        after_missing = int(st.session_state.df_working[mv_col].isnull().sum()) if mv_col in st.session_state.df_working.columns else 0
+                        # Capture after metrics before saving
+                        after_rows    = wdf.shape[0]
+                        after_cols    = wdf.shape[1]
+                        after_missing = int(wdf[mv_col].isnull().sum()) if mv_col in wdf.columns else 0
+
+                        st.session_state.df_working = wdf
                         log_step("fill_missing", {"column": mv_col, "action": action, **extra}, [mv_col])
-                        st.success(f"✅ Done. Rows: {before_rows} → {after_rows} | Missing in '{mv_col}': {before_missing} → {after_missing}")
+
+                        st.success(f"✅ Applied '{action}' to `{mv_col}`.")
+                        show_before_after_metrics(
+                            before_rows, after_rows,
+                            before_cols, after_cols,
+                            extra_before=before_missing,
+                            extra_after=after_missing,
+                            extra_label=f"Missing in '{mv_col}'",
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -759,11 +853,28 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                         by=subset or df.columns.tolist()))
 
                 keep = st.selectbox("Keep which duplicate?", ["first", "last"], key="dup_keep")
+
+                before_rows = df.shape[0]
+                before_cols = df.shape[1]
+
                 if st.button("Remove Duplicates", key="dup_apply"):
                     push_history()
-                    st.session_state.df_working = st.session_state.df_working.drop_duplicates(subset=subset, keep=keep)
+                    wdf = st.session_state.df_working.drop_duplicates(subset=subset, keep=keep)
+                    after_rows = wdf.shape[0]
+                    after_cols = wdf.shape[1]
+                    rows_removed = before_rows - after_rows
+
+                    st.session_state.df_working = wdf
                     log_step("drop_duplicates", {"subset": subset, "keep": keep}, subset or ["all columns"])
-                    st.success(f"✅ Removed {dup_count} duplicate rows.")
+
+                    st.success(f"✅ Removed {rows_removed} duplicate row(s).")
+                    show_before_after_metrics(
+                        before_rows, after_rows,
+                        before_cols, after_cols,
+                        extra_before=int(dup_count),
+                        extra_after=0,
+                        extra_label="Duplicate Rows",
+                    )
                     st.rerun()
 
         # ─────────────────────────────────────
@@ -783,22 +894,41 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
             if target_type == "numeric":
                 dirty_clean = st.checkbox("Clean dirty numerics (remove $, commas, etc.)", key="dt_dirty")
 
+            # Snapshot before values
+            before_nonnull = int(df[dt_col].notnull().sum())
+            before_null    = int(df[dt_col].isnull().sum())
+
+            st.caption(f"Non-null: **{before_nonnull:,}** | Missing: **{before_null:,}**")
+
             if st.button("Convert", key="dt_apply"):
                 push_history()
                 try:
-                    wdf = st.session_state.df_working
+                    wdf = st.session_state.df_working.copy()
                     if target_type == "numeric":
                         col_data = wdf[dt_col].astype(str)
                         if dirty_clean:
                             col_data = col_data.str.replace(r"[^\d.\-]", "", regex=True)
-                        st.session_state.df_working[dt_col] = pd.to_numeric(col_data, errors="coerce")
+                        wdf[dt_col] = pd.to_numeric(col_data, errors="coerce")
                     elif target_type == "categorical (string)":
-                        st.session_state.df_working[dt_col] = wdf[dt_col].astype(str)
+                        wdf[dt_col] = wdf[dt_col].astype(str)
                     elif target_type == "datetime":
                         fmt = dt_fmt if dt_fmt else None
-                        st.session_state.df_working[dt_col] = pd.to_datetime(wdf[dt_col], format=fmt, errors="coerce")
+                        wdf[dt_col] = pd.to_datetime(wdf[dt_col], format=fmt, errors="coerce")
+
+                    after_dtype   = str(wdf[dt_col].dtype)
+                    after_nonnull = int(wdf[dt_col].notnull().sum())
+                    after_null    = int(wdf[dt_col].isnull().sum())
+
+                    st.session_state.df_working = wdf
                     log_step("convert_dtype", {"column": dt_col, "target": target_type, "format": dt_fmt}, [dt_col])
-                    st.success(f"✅ Converted '{dt_col}' to {target_type}.")
+
+                    st.success(f"✅ Converted `{dt_col}` to {target_type}.")
+                    show_dtype_summary(
+                        dt_col,
+                        current_dtype, after_dtype,
+                        before_nonnull, after_nonnull,
+                        before_null, after_null,
+                    )
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -833,10 +963,15 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     freq_thresh = st.slider("Frequency threshold (%)", 1, 20, 5, key="cat_rare_thresh")
                     params = {"threshold": freq_thresh}
 
+                # Snapshot before values
+                before_unique     = int(df[cat_col].nunique(dropna=True))
+                before_top_values = df[cat_col].value_counts(dropna=False).head(10)
+
                 if st.button("Apply", key="cat_apply"):
                     push_history()
                     try:
-                        wdf = st.session_state.df_working
+                        wdf = st.session_state.df_working.copy()
+
                         if cat_action == "Trim whitespace":
                             wdf[cat_col] = wdf[cat_col].astype(str).str.strip()
                         elif cat_action == "Lowercase":
@@ -861,9 +996,26 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                             dummies = pd.get_dummies(wdf[cat_col], prefix=cat_col)
                             wdf = pd.concat([wdf.drop(columns=[cat_col]), dummies], axis=1)
 
+                        # Capture after values
+                        if cat_action != "One-hot encode":
+                            after_unique     = int(wdf[cat_col].nunique(dropna=True))
+                            after_top_values = wdf[cat_col].value_counts(dropna=False).head(10)
+                            new_dummy_cols   = None
+                        else:
+                            after_unique     = "N/A"
+                            after_top_values = None
+                            new_dummy_cols   = [c for c in wdf.columns if c.startswith(f"{cat_col}_")]
+
                         st.session_state.df_working = wdf
                         log_step("categorical_tool", {"column": cat_col, "action": cat_action, **params}, [cat_col])
-                        st.success(f"✅ Applied '{cat_action}' to '{cat_col}'.")
+
+                        st.success(f"✅ Applied '{cat_action}' to `{cat_col}`.")
+                        show_categorical_summary(
+                            cat_col, cat_action,
+                            before_unique, after_unique,
+                            before_top_values, after_top_values,
+                            new_dummy_cols=new_dummy_cols,
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -890,38 +1042,65 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 else:
                     z = np.abs(stats.zscore(col_data))
                     outliers = col_data[z > 3]
-                    lower, upper = col_data.mean() - 3 * col_data.std(), col_data.mean() + 3 * col_data.std()
+                    lower = col_data.mean() - 3 * col_data.std()
+                    upper = col_data.mean() + 3 * col_data.std()
 
-                st.metric(f"Outliers detected ({out_method})", len(outliers))
+                num_outliers = len(outliers)
+                st.metric(f"Outliers detected ({out_method})", num_outliers)
                 st.write(f"Bounds: **{lower:.2f}** — **{upper:.2f}**")
 
                 q_low, q_high = 0.05, 0.95
                 if out_action == "Cap / Winsorize at quantiles":
-                    q_low = st.slider("Lower quantile", 0.0, 0.2, 0.05, 0.01, key="out_qlow")
+                    q_low  = st.slider("Lower quantile", 0.0, 0.2, 0.05, 0.01, key="out_qlow")
                     q_high = st.slider("Upper quantile", 0.8, 1.0, 0.95, 0.01, key="out_qhigh")
 
                 if out_action != "Do nothing (just show)":
+                    before_rows = df.shape[0]
+                    before_cols = df.shape[1]
+
                     if st.button("Apply", key="out_apply"):
                         push_history()
                         try:
-                            wdf = st.session_state.df_working
-                            before = wdf.shape[0]
+                            wdf = st.session_state.df_working.copy()
+
                             if out_action == "Remove outlier rows":
                                 if out_method == "IQR":
                                     mask = (wdf[out_col] >= lower) & (wdf[out_col] <= upper)
                                 else:
-                                    z = np.abs(stats.zscore(wdf[out_col].dropna()))
-                                    valid_idx = wdf[out_col].dropna().index[z <= 3]
+                                    z_scores = np.abs(stats.zscore(wdf[out_col].dropna()))
+                                    valid_idx = wdf[out_col].dropna().index[z_scores <= 3]
                                     mask = wdf.index.isin(valid_idx) | wdf[out_col].isnull()
-                                st.session_state.df_working = wdf[mask]
-                                removed = before - st.session_state.df_working.shape[0]
-                                st.success(f"✅ Removed {removed} outlier rows.")
+                                wdf = wdf[mask]
+                                after_rows = wdf.shape[0]
+                                rows_removed = before_rows - after_rows
+                                extra_label  = "Outlier Rows Remaining"
+                                extra_before = num_outliers
+                                extra_after  = 0
+
                             elif out_action == "Cap / Winsorize at quantiles":
                                 lo = wdf[out_col].quantile(q_low)
                                 hi = wdf[out_col].quantile(q_high)
-                                st.session_state.df_working[out_col] = wdf[out_col].clip(lo, hi)
-                                st.success(f"✅ Capped '{out_col}' to [{lo:.2f}, {hi:.2f}].")
-                            log_step("outlier_handling", {"column": out_col, "method": out_method, "action": out_action}, [out_col])
+                                before_vals = wdf[out_col].copy()
+                                wdf[out_col] = wdf[out_col].clip(lo, hi)
+                                after_rows   = wdf.shape[0]
+                                capped_count = int(((before_vals != wdf[out_col]) & before_vals.notna()).sum())
+                                extra_label  = "Values Capped"
+                                extra_before = num_outliers
+                                extra_after  = capped_count
+
+                            st.session_state.df_working = wdf
+                            log_step("outlier_handling",
+                                     {"column": out_col, "method": out_method, "action": out_action},
+                                     [out_col])
+
+                            st.success(f"✅ Applied '{out_action}' on `{out_col}`.")
+                            show_before_after_metrics(
+                                before_rows, after_rows,
+                                before_cols, wdf.shape[1],
+                                extra_before=extra_before,
+                                extra_after=extra_after,
+                                extra_label=extra_label,
+                            )
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -935,31 +1114,46 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
             if not num_cols_list:
                 st.info("No numeric columns detected.")
             else:
-                scale_cols = st.multiselect("Select columns to scale", num_cols_list, key="scale_cols")
+                scale_cols   = st.multiselect("Select columns to scale", num_cols_list, key="scale_cols")
                 scale_method = st.selectbox("Method", ["Min-Max Scaling", "Z-score Standardization"], key="scale_method")
 
                 if scale_cols:
-                    before_stats = df[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
-                    st.write("**Before stats:**")
-                    show_table(before_stats)
+                    before_stats = df[scale_cols].describe().T[["mean", "std", "min", "max"]]
+                    st.caption("Current statistics for selected columns:")
+                    show_table(before_stats.round(4).reset_index().rename(columns={"index": "Column"}))
 
                 if scale_cols and st.button("Apply Scaling", key="scale_apply"):
                     push_history()
                     try:
-                        wdf = st.session_state.df_working
+                        wdf = st.session_state.df_working.copy()
+                        skipped = []
                         for col in scale_cols:
                             if scale_method == "Min-Max Scaling":
                                 mn, mx = wdf[col].min(), wdf[col].max()
-                                wdf[col] = (wdf[col] - mn) / (mx - mn) if mx != mn else 0
+                                if mx != mn:
+                                    wdf[col] = (wdf[col] - mn) / (mx - mn)
+                                else:
+                                    skipped.append(col)
                             else:
                                 mean, std = wdf[col].mean(), wdf[col].std()
-                                wdf[col] = (wdf[col] - mean) / std if std != 0 else 0
+                                if std != 0:
+                                    wdf[col] = (wdf[col] - mean) / std
+                                else:
+                                    skipped.append(col)
+
+                        after_stats = wdf[scale_cols].describe().T[["mean", "std", "min", "max"]]
+
                         st.session_state.df_working = wdf
-                        after_stats = wdf[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
-                        st.write("**After stats:**")
-                        show_table(after_stats)
                         log_step("scale_columns", {"method": scale_method, "columns": scale_cols}, scale_cols)
-                        st.success(f"✅ Scaled {len(scale_cols)} column(s).")
+
+                        if skipped:
+                            st.warning(f"⚠️ Skipped constant columns: {skipped}")
+                        st.success(f"✅ Scaled {len(scale_cols) - len(skipped)} column(s) using {scale_method}.")
+                        show_scaling_summary(
+                            scale_cols,
+                            before_stats.reset_index().rename(columns={"index": "Column"}),
+                            after_stats.reset_index().rename(columns={"index": "Column"}),
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -976,61 +1170,91 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 "Bin numeric column",
             ], key="col_op")
 
+            # ── Rename ────────────────────────────────────────────────────────
             if col_op == "Rename column":
                 rename_col = st.selectbox("Column to rename", df.columns.tolist(), key="rename_col")
-                new_name = st.text_input("New name", key="rename_new")
+                new_name   = st.text_input("New name", key="rename_new")
                 if st.button("Rename", key="rename_apply") and new_name:
-                    push_history()
-                    st.session_state.df_working = st.session_state.df_working.rename(columns={rename_col: new_name})
-                    log_step("rename_column", {"from": rename_col, "to": new_name}, [rename_col])
-                    st.success(f"✅ Renamed '{rename_col}' → '{new_name}'.")
-                    st.rerun()
+                    if new_name in df.columns:
+                        st.warning("That column name already exists.")
+                    else:
+                        push_history()
+                        df_before = st.session_state.df_working.copy()
+                        st.session_state.df_working = df_before.rename(columns={rename_col: new_name})
+                        log_step("rename_column", {"from": rename_col, "to": new_name}, [rename_col])
+                        st.success(f"✅ Renamed `{rename_col}` → `{new_name}`.")
+                        show_column_changes(df_before, st.session_state.df_working)
+                        st.rerun()
 
+            # ── Drop ──────────────────────────────────────────────────────────
             elif col_op == "Drop columns":
                 drop_cols = st.multiselect("Select columns to drop", df.columns.tolist(), key="drop_cols")
                 if drop_cols and st.button("Drop", key="drop_apply"):
                     push_history()
-                    st.session_state.df_working = st.session_state.df_working.drop(columns=drop_cols)
+                    df_before = st.session_state.df_working.copy()
+                    st.session_state.df_working = df_before.drop(columns=drop_cols)
                     log_step("drop_columns", {"columns": drop_cols}, drop_cols)
                     st.success(f"✅ Dropped {len(drop_cols)} column(s).")
+                    show_column_changes(df_before, st.session_state.df_working)
+                    show_before_after_metrics(
+                        df_before.shape[0], st.session_state.df_working.shape[0],
+                        df_before.shape[1], st.session_state.df_working.shape[1],
+                    )
                     st.rerun()
 
+            # ── Create ────────────────────────────────────────────────────────
             elif col_op == "Create new column (formula)":
                 new_col_name = st.text_input("New column name", key="formula_name")
-                formula = st.text_input("Formula (use column names as variables)",
-                                         placeholder="price / area   or   price - price.mean()", key="formula_expr")
+                formula = st.text_input(
+                    "Formula (use column names as variables)",
+                    placeholder="price / area   or   price - price.mean()",
+                    key="formula_expr",
+                )
                 st.caption("Available: all column names, numpy as np, pandas as pd")
                 if new_col_name and formula and st.button("Create", key="formula_apply"):
                     push_history()
                     try:
-                        local_vars = {col: st.session_state.df_working[col] for col in st.session_state.df_working.columns}
+                        df_before  = st.session_state.df_working.copy()
+                        local_vars = {col: df_before[col] for col in df_before.columns}
                         local_vars["np"] = np
                         local_vars["pd"] = pd
-                        st.session_state.df_working[new_col_name] = eval(formula, {"__builtins__": {}}, local_vars)
+                        df_before[new_col_name] = eval(formula, {"__builtins__": {}}, local_vars)
+                        st.session_state.df_working = df_before
                         log_step("create_column", {"name": new_col_name, "formula": formula}, [new_col_name])
-                        st.success(f"✅ Created column '{new_col_name}'.")
+                        st.success(f"✅ Created column `{new_col_name}`.")
+                        # Show a quick column diff
+                        show_column_changes(
+                            df,                          # original df (before this operation)
+                            st.session_state.df_working, # after
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Formula error: {e}")
                         undo_last()
 
+            # ── Bin ───────────────────────────────────────────────────────────
             elif col_op == "Bin numeric column":
                 num_cols_list = numeric_cols(df)
-                bin_col = st.selectbox("Column to bin", num_cols_list, key="bin_col")
-                bin_method = st.radio("Binning method", ["Equal-width", "Quantile"], key="bin_method")
-                bin_count = st.slider("Number of bins", 2, 20, 5, key="bin_count")
+                bin_col      = st.selectbox("Column to bin", num_cols_list, key="bin_col")
+                bin_method   = st.radio("Binning method", ["Equal-width", "Quantile"], key="bin_method")
+                bin_count    = st.slider("Number of bins", 2, 20, 5, key="bin_count")
                 bin_new_name = st.text_input("New column name", value=f"{bin_col}_binned", key="bin_new_name")
                 if st.button("Bin", key="bin_apply"):
                     push_history()
                     try:
+                        df_before = st.session_state.df_working.copy()
                         if bin_method == "Equal-width":
-                            st.session_state.df_working[bin_new_name] = pd.cut(
-                                st.session_state.df_working[bin_col], bins=bin_count, include_lowest=True).astype(str)
+                            df_before[bin_new_name] = pd.cut(
+                                df_before[bin_col], bins=bin_count, include_lowest=True).astype(str)
                         else:
-                            st.session_state.df_working[bin_new_name] = pd.qcut(
-                                st.session_state.df_working[bin_col], q=bin_count, duplicates="drop").astype(str)
-                        log_step("bin_column", {"column": bin_col, "method": bin_method, "bins": bin_count}, [bin_new_name])
-                        st.success(f"✅ Created binned column '{bin_new_name}'.")
+                            df_before[bin_new_name] = pd.qcut(
+                                df_before[bin_col], q=bin_count, duplicates="drop").astype(str)
+                        st.session_state.df_working = df_before
+                        log_step("bin_column",
+                                 {"column": bin_col, "method": bin_method, "bins": bin_count},
+                                 [bin_new_name])
+                        st.success(f"✅ Created binned column `{bin_new_name}`.")
+                        show_column_changes(df, st.session_state.df_working)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -1076,11 +1300,14 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     violations_df = df[df[val_cols].isnull().any(axis=1)]
 
             if not violations_df.empty:
-                st.markdown(f'<span class="violation-badge">⚠️ {len(violations_df)} violations found</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="violation-badge">⚠️ {len(violations_df)} violations found</span>',
+                            unsafe_allow_html=True)
                 show_table(violations_df.head(200))
                 viol_csv = violations_df.to_csv(index=False).encode("utf-8")
                 st.download_button("📥 Export Violations CSV", viol_csv, "violations.csv", "text/csv")
-            elif "val_num_check" in st.session_state or "val_cat_check" in st.session_state or "val_null_check" in st.session_state:
+            elif ("val_num_check" in st.session_state
+                  or "val_cat_check" in st.session_state
+                  or "val_null_check" in st.session_state):
                 st.success("✅ No violations found.")
 
         # Current data preview
@@ -1088,6 +1315,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
         st.markdown('<div class="section-header">Current Working Dataset</div>', unsafe_allow_html=True)
         st.caption(f"Shape: {st.session_state.df_working.shape[0]:,} rows × {st.session_state.df_working.shape[1]} cols")
         show_table(st.session_state.df_working.head(100))
+
 
 # ══════════════════════════════════════════════
 # PAGE C — VISUALIZATION STUDIO
@@ -1103,7 +1331,6 @@ with tab_c:
         cat_cols_list = categorical_cols(df)
         dt_cols_list  = datetime_cols(df)
 
-        # ── Palette & theme (defined here, consistent everywhere) ──────────────
         PALETTE = [
             "#0066CC", "#4CB140", "#009596", "#F0AB00", "#EC7A08",
             "#C9190B", "#519DE9", "#7CC674", "#73C5C5", "#F6D173",
@@ -1160,7 +1387,6 @@ with tab_c:
             return tmp.sort_values("__ord").drop(columns="__ord")
 
         def _auto_rot(ax, labels):
-            """Smart x-label rotation — horizontal when few/short, angled otherwise."""
             n, mx = len(labels), max((len(str(l)) for l in labels), default=0)
             if n > 10 or mx > 8:
                 ax.set_xticklabels([str(l) for l in labels], rotation=40, ha="right", fontsize=9)
@@ -1170,11 +1396,9 @@ with tab_c:
                 ax.set_xticklabels([str(l) for l in labels], rotation=0, ha="center", fontsize=10)
 
         def _make_mpl_fig(n_cats=1, n_groups=1):
-            """Return a matplotlib figure sized to never produce overlapping bars."""
             w = max(10, n_cats * n_groups * 0.75 + 3)
             return plt.subplots(figsize=(min(w, 32), 5))
 
-        # ── LAYOUT: 30/70 split ────────────────────────────────────────────────
         left_col, right_col = st.columns([3, 7], gap="large")
 
         with left_col:
@@ -1258,7 +1482,6 @@ with tab_c:
 
             chart_title = st.text_input("Chart title (optional)", key="chart_title")
 
-            # ── Filters ──────────────────────────────────────────────────────
             st.markdown('<div style="height:0.2rem;border-top:1px solid #e5e7eb;margin:0.4rem 0 0.3rem 0"></div>', unsafe_allow_html=True)
             st.markdown('<div class="section-header">③ Filters</div>', unsafe_allow_html=True)
             show_filters = st.toggle("⚙ Show Filters", value=False, key="show_filters")
@@ -1299,7 +1522,6 @@ with tab_c:
             st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
             generate_clicked = st.button("📊 Generate Chart", use_container_width=True, key="generate_chart", type="primary")
 
-        # ── RIGHT COLUMN ───────────────────────────────────────────────────────
         with right_col:
             st.markdown('<div class="section-header">Chart Output</div>', unsafe_allow_html=True)
 
@@ -1316,20 +1538,17 @@ with tab_c:
                     t = chart_title if chart_title else base
                     return t + filter_suffix if filter_suffix else t
 
-                # Empty-data guard
                 if plot_df.empty:
                     st.warning("⚠️ No data after applying filters. Adjust or clear them.")
                 else:
                     st.caption(f"{len(plot_df):,} rows shown out of {len(df):,}")
                     export_fig = None
 
-                    # Decide if category filter should auto-group histograms
                     hist_group_col = (filter_cat_col
                                       if filter_cat_col != "(none)" and len(filter_cat_vals) > 1
                                       else None)
 
                     try:
-                        # ── HISTOGRAM ──────────────────────────────────────────
                         if chart_type == "Histogram":
                             hist_df = plot_df[[x_col] + ([hist_group_col] if hist_group_col else [])].dropna(subset=[x_col]).copy()
                             _all_vals = hist_df[x_col].dropna()
@@ -1368,7 +1587,6 @@ with tab_c:
                             fig_e.tight_layout(pad=1.5)
                             export_fig = fig_e
 
-                        # ── BOX PLOT ───────────────────────────────────────────
                         elif chart_type == "Box Plot":
                             grp_col = x_col if (x_col and x_col != "(none)") else None
                             if grp_col:
@@ -1405,7 +1623,6 @@ with tab_c:
                             fig_e.patch.set_facecolor("white"); fig_e.tight_layout(pad=1.5)
                             export_fig = fig_e
 
-                        # ── SCATTER PLOT ───────────────────────────────────────
                         elif chart_type == "Scatter Plot":
                             sc_df = plot_df.copy()
                             c = color_col if color_col and color_col != "(none)" else None
@@ -1433,7 +1650,6 @@ with tab_c:
                             fig_e.patch.set_facecolor("white"); fig_e.tight_layout(pad=1.5)
                             export_fig = fig_e
 
-                        # ── LINE CHART ─────────────────────────────────────────
                         elif chart_type == "Line Chart":
                             c = color_col if color_col and color_col != "(none)" else None
                             grp = [x_col] + ([c] if c else [])
@@ -1468,15 +1684,13 @@ with tab_c:
                             fig_e.patch.set_facecolor("white"); fig_e.tight_layout(pad=1.5)
                             export_fig = fig_e
 
-                        # ── BAR CHART ──────────────────────────────────────────
                         elif chart_type == "Bar Chart (Grouped)":
                             c = color_col if color_col and color_col != "(none)" else None
                             grp = [x_col] + ([c] if c else [])
                             bar_df = plot_df.groupby(grp, dropna=False)[y_col].agg(agg_method).reset_index()
 
-                            # Cap top_n to what's available after filters
-                            avail = bar_df[x_col].nunique()
-                            eff_n = min(top_n, avail)
+                            avail  = bar_df[x_col].nunique()
+                            eff_n  = min(top_n, avail)
                             top_vals = bar_df.groupby(x_col, dropna=False)[y_col].sum().nlargest(eff_n).index
                             bar_df   = bar_df[bar_df[x_col].isin(top_vals)].copy()
                             x_order  = bar_df.groupby(x_col, dropna=False)[y_col].sum().sort_values(ascending=False).index.tolist()
@@ -1491,21 +1705,20 @@ with tab_c:
                             _apply_pf_axes(pfig, showlegend=bool(c))
                             st.plotly_chart(pfig, use_container_width=True)
 
-                            # Matplotlib export — dynamic sizing so bars never overlap
-                            cats = [str(v) for v in x_order]
+                            cats   = [str(v) for v in x_order]
                             g_list = (list(dict.fromkeys(bar_df[c].dropna().astype(str).tolist()))
                                       if c and c in bar_df.columns else [])
-                            n_g = max(len(g_list), 1)
+                            n_g    = max(len(g_list), 1)
                             fig_e, ax_e = _make_mpl_fig(len(cats), n_g)
-                            x_idx = np.arange(len(cats))
+                            x_idx  = np.arange(len(cats))
 
                             if c and g_list:
-                                bar_w      = 0.75 / n_g
+                                bar_w        = 0.75 / n_g
                                 offset_start = -0.75 / 2 + bar_w / 2
                                 for i, gv in enumerate(g_list):
                                     gdf = bar_df[bar_df[c].astype(str) == gv].copy()
                                     gdf["__xk"] = gdf[x_col].astype(str)
-                                    gs = gdf.groupby("__xk")[y_col].sum()
+                                    gs   = gdf.groupby("__xk")[y_col].sum()
                                     vals = [float(gs.get(cat, 0)) for cat in cats]
                                     ax_e.bar(x_idx + offset_start + i * bar_w, vals,
                                              width=bar_w * 0.92, color=PALETTE[i % len(PALETTE)],
@@ -1521,7 +1734,6 @@ with tab_c:
                             fig_e.patch.set_facecolor("white"); fig_e.tight_layout(pad=1.5)
                             export_fig = fig_e
 
-                        # ── HEATMAP ────────────────────────────────────────────
                         elif chart_type == "Heatmap / Correlation Matrix":
                             corr = plot_df[heatmap_cols].corr()
                             sz   = max(8, len(heatmap_cols))
@@ -1550,7 +1762,6 @@ with tab_c:
                     finally:
                         plt.close("all")
 
-            # ── PNG Export ────────────────────────────────────────────────────
             if "last_export_fig" in st.session_state:
                 buf = io.BytesIO()
                 try:
@@ -1574,7 +1785,6 @@ with tab_d:
     else:
         df_export = st.session_state.df_working
 
-        # ── Dataset Export
         st.markdown('<div class="section-header">Dataset Export</div>', unsafe_allow_html=True)
         st.caption(f"Current working dataset: **{df_export.shape[0]:,} rows × {df_export.shape[1]} cols**")
 
@@ -1593,7 +1803,6 @@ with tab_d:
 
         st.markdown("---")
 
-        # ── Transformation Report
         st.markdown('<div class="section-header">Transformation Report</div>', unsafe_allow_html=True)
 
         if not st.session_state.recipe:
@@ -1614,7 +1823,6 @@ with tab_d:
             report_df = pd.DataFrame(report_rows)
             show_table(report_df)
 
-            # ── Recipe JSON Export
             st.markdown("---")
             st.markdown('<div class="section-header">Recipe Export (JSON)</div>', unsafe_allow_html=True)
             recipe_json = json.dumps(st.session_state.recipe, indent=2)
@@ -1627,7 +1835,6 @@ with tab_d:
                 use_container_width=True
             )
 
-            # ── Report text export
             st.markdown("---")
             st.markdown('<div class="section-header">Full Report Export</div>', unsafe_allow_html=True)
             report_text = f"DataStudio Transformation Report\nGenerated: {datetime.now().isoformat(timespec='seconds')}\n"
