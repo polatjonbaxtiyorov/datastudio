@@ -503,7 +503,7 @@ with tab_a:
 
         st.markdown("---")
 
-        st.markdown('<div class="section-header">1 · Shape</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">1 · Dataset Information</div>', unsafe_allow_html=True)
         m1, m2, m3 = st.columns(3)
         with m1:
             st.markdown(f'<div class="metric-card"><h4>Rows</h4><p>{df.shape[0]:,}</p></div>', unsafe_allow_html=True)
@@ -512,7 +512,7 @@ with tab_a:
         with m3:
             st.markdown(f'<div class="metric-card"><h4>Total Cells</h4><p>{df.shape[0] * df.shape[1]:,}</p></div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="section-header">2 · Column Names & Inferred Dtypes</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">2 · Column Names & Data Types</div>', unsafe_allow_html=True)
         dtype_df = pd.DataFrame({
             "Column": df.columns,
             "Dtype": df.dtypes.astype(str).values,
