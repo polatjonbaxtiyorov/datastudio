@@ -1205,107 +1205,133 @@ with tab_c:
             if not chart_ok and generate_clicked:
                 st.warning(f"⚠️ Cannot generate this chart: {chart_warn}")
 
-            elif generate_clicked and chart_ok:
+            # ── Chart theme constants (defined once, used in generate + export) ──────
+            _VIZ_PALETTE = [
+                "#0066CC",  # blue
+                "#4CB140",  # green
+                "#009596",  # cyan
+                "#F0AB00",  # gold
+                "#EC7A08",  # orange
+                "#C9190B",  # red
+                "#519DE9",  # light blue
+                "#7CC674",  # light green
+                "#73C5C5",  # light cyan
+                "#F6D173",  # light gold
+            ]
+            _VIZ_BG   = "#FAFAFA"
+            _VIZ_GRID = "#E8E8E8"
+            _VIZ_TEXT = "#151515"
+            _VIZ_MUTED = "#6A6E73"
+
+            def _styled_ax(ax, title, xlabel, ylabel):
+                ax.set_title(title, fontsize=14, fontweight="bold", pad=14, color=_VIZ_TEXT)
+                ax.set_xlabel(xlabel, fontweight="bold", fontsize=12, color=_VIZ_TEXT, labelpad=8)
+                ax.set_ylabel(ylabel, fontweight="bold", fontsize=12, color=_VIZ_TEXT, labelpad=8)
+                ax.spines[["top", "right"]].set_visible(False)
+                ax.spines[["left", "bottom"]].set_color("#D2D2D2")
+                ax.set_facecolor(_VIZ_BG)
+                ax.yaxis.grid(True, color=_VIZ_GRID, linewidth=0.8, linestyle="--", zorder=0)
+                ax.set_axisbelow(True)
+                ax.tick_params(labelsize=10, colors=_VIZ_MUTED)
+
+            def _style_legend(ax, title=None):
+                leg = ax.legend(
+                    title=title,
+                    fontsize=9,
+                    framealpha=0.92,
+                    edgecolor="#D2D2D2",
+                    facecolor="white",
+                    title_fontsize=9,
+                )
+                if leg:
+                    leg.get_frame().set_linewidth(0.8)
+
+            def _apply_pf_axes(fig, *, showlegend=True):
+                fig.update_layout(
+                    paper_bgcolor="white",
+                    plot_bgcolor=_VIZ_BG,
+                    font=dict(color=_VIZ_TEXT, family="DM Sans", size=12),
+                    title=dict(font=dict(size=15, color=_VIZ_TEXT)),
+                    legend=dict(
+                        bgcolor="white",
+                        bordercolor="#D2D2D2",
+                        borderwidth=1,
+                        font=dict(size=11, color=_VIZ_TEXT),
+                        title=dict(font=dict(size=11, color=_VIZ_TEXT)),
+                    ),
+                    margin=dict(l=60, r=40, t=70, b=60),
+                    showlegend=showlegend,
+                )
+                fig.update_xaxes(
+                    title_font=dict(size=13, color=_VIZ_TEXT),
+                    tickfont=dict(size=11, color=_VIZ_MUTED),
+                    gridcolor=_VIZ_GRID,
+                    zerolinecolor=_VIZ_GRID,
+                    linecolor="#D2D2D2",
+                )
+                fig.update_yaxes(
+                    title_font=dict(size=13, color=_VIZ_TEXT),
+                    tickfont=dict(size=11, color=_VIZ_MUTED),
+                    gridcolor=_VIZ_GRID,
+                    zerolinecolor=_VIZ_GRID,
+                    linecolor="#D2D2D2",
+                )
+                return fig
+
+            def _order_categories(series):
+                return list(dict.fromkeys(series.dropna().astype(str).tolist()))
+
+            def _sort_for_line(frame, x_name):
+                if x_name not in frame.columns:
+                    return frame
+                if pd.api.types.is_numeric_dtype(frame[x_name]) or pd.api.types.is_datetime64_any_dtype(frame[x_name]):
+                    return frame.sort_values(x_name)
+                ordered = pd.Categorical(frame[x_name].astype(str), categories=_order_categories(frame[x_name]), ordered=True)
+                tmp = frame.copy()
+                tmp["_x_order"] = ordered
+                return tmp.sort_values("_x_order").drop(columns="_x_order")
+
+            def _auto_rotate(ax, labels, threshold=6):
+                """Rotate x labels only when they are long or numerous."""
+                max_len = max((len(str(l)) for l in labels), default=0)
+                n = len(labels)
+                if n > 10 or max_len > 8:
+                    ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=9)
+                elif n > 6 or max_len > 5:
+                    ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=10)
+                else:
+                    ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=10)
+
+            if generate_clicked and chart_ok:
                 st.session_state.pop("last_chart_params", None)
                 st.session_state.pop("last_export_fig", None)
 
-                # ── PatternFly-inspired chart theme
-                # Ordered palette aligned to PatternFly-style categorical colors
-                PALETTE = [
-                    "#0066CC",  # blue
-                    "#4CB140",  # green
-                    "#009596",  # cyan
-                    "#F0AB00",  # gold
-                    "#EC7A08",  # orange
-                    "#C9190B",  # red
-                    "#519DE9",  # light blue
-                    "#7CC674",  # light green
-                    "#73C5C5",  # light cyan
-                    "#F6D173",  # light gold
-                ]
-
-                PF_PLOTLY = PALETTE
-                BG = "#FAFAFA"
-                GRID = "#E8E8E8"
-                TEXT = "#151515"
-                MUTED = "#6A6E73"
-
-                def styled_ax(ax, title, xlabel, ylabel):
-                    ax.set_title(title, fontsize=14, fontweight="bold", pad=14, color=TEXT)
-                    ax.set_xlabel(xlabel, fontweight="bold", fontsize=12, color=TEXT, labelpad=8)
-                    ax.set_ylabel(ylabel, fontweight="bold", fontsize=12, color=TEXT, labelpad=8)
-                    ax.spines[["top", "right"]].set_visible(False)
-                    ax.spines[["left", "bottom"]].set_color("#D2D2D2")
-                    ax.set_facecolor(BG)
-                    ax.yaxis.grid(True, color=GRID, linewidth=0.8, linestyle="--", zorder=0)
-                    ax.set_axisbelow(True)
-                    ax.tick_params(labelsize=10, colors=MUTED)
-
-                def style_legend(ax, title=None):
-                    leg = ax.legend(
-                        title=title,
-                        fontsize=9,
-                        framealpha=0.92,
-                        edgecolor="#D2D2D2",
-                        facecolor="white",
-                        title_fontsize=9,
-                    )
-                    if leg:
-                        leg.get_frame().set_linewidth(0.8)
-
-                def apply_pf_axes(fig, *, showlegend=True):
-                    fig.update_layout(
-                        paper_bgcolor="white",
-                        plot_bgcolor=BG,
-                        font=dict(color=TEXT, family="DM Sans", size=12),
-                        title=dict(font=dict(size=15, color=TEXT)),
-                        legend=dict(
-                            bgcolor="white",
-                            bordercolor="#D2D2D2",
-                            borderwidth=1,
-                            font=dict(size=11, color=TEXT),
-                            title=dict(font=dict(size=11, color=TEXT)),
-                        ),
-                        margin=dict(l=60, r=40, t=70, b=60),
-                        showlegend=showlegend,
-                    )
-                    fig.update_xaxes(
-                        title_font=dict(size=13, color=TEXT),
-                        tickfont=dict(size=11, color=MUTED),
-                        gridcolor=GRID,
-                        zerolinecolor=GRID,
-                        linecolor="#D2D2D2",
-                    )
-                    fig.update_yaxes(
-                        title_font=dict(size=13, color=TEXT),
-                        tickfont=dict(size=11, color=MUTED),
-                        gridcolor=GRID,
-                        zerolinecolor=GRID,
-                        linecolor="#D2D2D2",
-                    )
-                    return fig
+                # Alias theme vars into local scope for chart blocks below
+                PALETTE  = _VIZ_PALETTE
+                PF_PLOTLY = _VIZ_PALETTE
+                BG    = _VIZ_BG
+                GRID  = _VIZ_GRID
+                TEXT  = _VIZ_TEXT
+                MUTED = _VIZ_MUTED
+                styled_ax     = _styled_ax
+                style_legend  = _style_legend
+                apply_pf_axes = _apply_pf_axes
+                order_categories = _order_categories
+                sort_for_line    = _sort_for_line
 
                 def row_count_text(frame):
                     return f"{len(frame):,} rows shown out of {len(df):,}"
-
-                def order_categories(series):
-                    return list(dict.fromkeys(series.dropna().astype(str).tolist()))
-
-                def sort_for_line(frame, x_name):
-                    if x_name not in frame.columns:
-                        return frame
-                    if pd.api.types.is_numeric_dtype(frame[x_name]) or pd.api.types.is_datetime64_any_dtype(frame[x_name]):
-                        return frame.sort_values(x_name)
-                    ordered = pd.Categorical(frame[x_name].astype(str), categories=order_categories(frame[x_name]), ordered=True)
-                    tmp = frame.copy()
-                    tmp["_x_order"] = ordered
-                    return tmp.sort_values("_x_order").drop(columns="_x_order")
 
                 try:
                     export_fig = None
 
                     def make_title(base):
                         return f"{base}{filter_suffix}" if filter_suffix else base
+
+                    # Guard: no data after filters
+                    if plot_df.empty:
+                        st.warning("⚠️ No data matches the current filters. Adjust or clear them to generate a chart.")
+                        raise ValueError("empty_plot_df")
 
                     # Clear chart summary for the user
                     st.caption(row_count_text(plot_df))
@@ -1348,15 +1374,17 @@ with tab_c:
                             apply_pf_axes(pfig, showlegend=False)
                         st.plotly_chart(pfig, use_container_width=True)
 
-                        # Export: Matplotlib
+                        # Export: Matplotlib — share identical bin edges with Plotly for consistency
+                        _hist_data_all = hist_df[x_col].dropna()
+                        _bin_edges = np.linspace(_hist_data_all.min(), _hist_data_all.max(), bins + 1)
                         fig_e, ax_e = plt.subplots(figsize=(10, 5))
                         if hist_group_col:
-                            groups = order_categories(hist_df[hist_group_col])
-                            for idx, grp_val in enumerate(groups):
+                            _hist_groups = order_categories(hist_df[hist_group_col])
+                            for idx, grp_val in enumerate(_hist_groups):
                                 grp_data = hist_df.loc[hist_df[hist_group_col].astype(str) == grp_val, x_col].dropna()
                                 ax_e.hist(
                                     grp_data,
-                                    bins=bins,
+                                    bins=_bin_edges,
                                     color=PALETTE[idx % len(PALETTE)],
                                     alpha=0.68,
                                     edgecolor="white",
@@ -1367,8 +1395,8 @@ with tab_c:
                             style_legend(ax_e, title=hist_group_col)
                         else:
                             ax_e.hist(
-                                hist_df[x_col].dropna(),
-                                bins=bins,
+                                _hist_data_all,
+                                bins=_bin_edges,
                                 color=PALETTE[0],
                                 alpha=0.88,
                                 edgecolor="white",
@@ -1377,7 +1405,7 @@ with tab_c:
                             )
                         styled_ax(ax_e, make_title(f"Distribution of {x_col}"), x_col, "Count")
                         fig_e.patch.set_facecolor("white")
-                        fig_e.tight_layout()
+                        fig_e.tight_layout(pad=1.5)
                         export_fig = fig_e
 
                     # ── Box Plot ──────────────────────────────────────────
@@ -1401,14 +1429,16 @@ with tab_c:
                         apply_pf_axes(pfig, showlegend=bool(grp_col))
                         st.plotly_chart(pfig, use_container_width=True)
 
-                        fig_e, ax_e = plt.subplots(figsize=(10, 5))
-                        if grp_col:
-                            groups = [g for g in plot_df[grp_col].dropna().unique().tolist()]
-                            data_list = [plot_df[plot_df[grp_col] == g][y_col].dropna().values for g in groups]
+                        _bp_groups = [g for g in plot_df[grp_col].dropna().unique().tolist()] if grp_col else None
+                        _n_boxes = len(_bp_groups) if _bp_groups else 1
+                        _bp_fig_w = max(8, min(20, 1.2 * _n_boxes + 4))
+                        fig_e, ax_e = plt.subplots(figsize=(_bp_fig_w, 5))
+                        if grp_col and _bp_groups:
+                            data_list = [plot_df[plot_df[grp_col] == g][y_col].dropna().values for g in _bp_groups]
                             bp = ax_e.boxplot(
                                 data_list,
                                 patch_artist=True,
-                                labels=[str(g) for g in groups],
+                                labels=[str(g) for g in _bp_groups],
                                 medianprops=dict(color=TEXT, linewidth=2),
                             )
                             for patch, col in zip(bp["boxes"], PALETTE):
@@ -1418,6 +1448,7 @@ with tab_c:
                                 whisker.set_color("#6A6E73")
                             for cap in bp["caps"]:
                                 cap.set_color("#6A6E73")
+                            _auto_rotate(ax_e, [str(g) for g in _bp_groups])
                         else:
                             bp = ax_e.boxplot(
                                 plot_df[y_col].dropna().values,
@@ -1428,7 +1459,7 @@ with tab_c:
                             bp["boxes"][0].set_alpha(0.82)
                         styled_ax(ax_e, make_title(f"Box Plot: {y_col}"), grp_col or "", y_col)
                         fig_e.patch.set_facecolor("white")
-                        fig_e.tight_layout()
+                        fig_e.tight_layout(pad=1.5)
                         export_fig = fig_e
 
                     # ── Scatter Plot ──────────────────────────────────────
@@ -1480,7 +1511,7 @@ with tab_c:
                             )
                         styled_ax(ax_e, make_title(f"{x_col} vs {y_col}"), x_col, y_col)
                         fig_e.patch.set_facecolor("white")
-                        fig_e.tight_layout()
+                        fig_e.tight_layout(pad=1.5)
                         export_fig = fig_e
 
                     # ── Line Chart ────────────────────────────────────────
@@ -1507,6 +1538,7 @@ with tab_c:
                         apply_pf_axes(pfig, showlegend=bool(c))
                         st.plotly_chart(pfig, use_container_width=True)
 
+                        _line_labels = [str(v) for v in sort_for_line(line_df, x_col)[x_col].tolist()] if not c else []
                         fig_e, ax_e = plt.subplots(figsize=(10, 5))
                         if c and c in line_df.columns:
                             for idx, (gv, gdf) in enumerate(line_df.groupby(c, dropna=False)):
@@ -1522,6 +1554,7 @@ with tab_c:
                                     zorder=3,
                                 )
                             style_legend(ax_e, title=c)
+                            _auto_rotate(ax_e, [str(v) for v in sort_for_line(line_df.groupby([x_col], as_index=False).first(), x_col)[x_col]])
                         else:
                             ld = sort_for_line(line_df, x_col)
                             ax_e.plot(
@@ -1533,10 +1566,10 @@ with tab_c:
                                 markersize=7,
                                 zorder=3,
                             )
-                        ax_e.tick_params(axis="x", rotation=30)
+                            _auto_rotate(ax_e, ld[x_col].astype(str).tolist())
                         styled_ax(ax_e, make_title(f"{y_col} over {x_col}"), x_col, y_col)
                         fig_e.patch.set_facecolor("white")
-                        fig_e.tight_layout()
+                        fig_e.tight_layout(pad=1.5)
                         export_fig = fig_e
 
                     # ── Bar Chart ─────────────────────────────────────────
@@ -1546,10 +1579,13 @@ with tab_c:
                         grp = [x_col] + ([c] if c else [])
                         bar_df = bar_df.groupby(grp, dropna=False)[y_col].agg(agg_method).reset_index()
 
-                        top_vals = bar_df.groupby(x_col, dropna=False)[y_col].sum().nlargest(top_n).index
+                        # Cap top_n to available categories after filtering
+                        _avail_cats = bar_df[x_col].nunique()
+                        _top_n_eff = min(top_n, _avail_cats)
+                        top_vals = bar_df.groupby(x_col, dropna=False)[y_col].sum().nlargest(_top_n_eff).index
                         bar_df = bar_df[bar_df[x_col].isin(top_vals)].copy()
                         bar_df = bar_df.sort_values(y_col, ascending=False)
-                        t = make_title(f"{agg_method.title()} of {y_col} by {x_col} (Top {top_n})")
+                        t = make_title(f"{agg_method.title()} of {y_col} by {x_col} (Top {_top_n_eff})")
 
                         x_order = bar_df.groupby(x_col, dropna=False)[y_col].sum().sort_values(ascending=False).index.tolist()
                         pfig = px.bar(
@@ -1564,40 +1600,52 @@ with tab_c:
                         )
                         pfig.update_traces(marker_line_width=0)
                         apply_pf_axes(pfig, showlegend=bool(c))
+                        # Improve bar spacing when many categories
+                        if _top_n_eff > 12:
+                            pfig.update_layout(bargap=0.15, bargroupgap=0.05)
                         st.plotly_chart(pfig, use_container_width=True)
 
-                        fig_e, ax_e = plt.subplots(figsize=(12, 5))
-                        if c and c in bar_df.columns:
-                            groups = list(dict.fromkeys(bar_df[c].dropna().astype(str).tolist()))
-                            cats = [str(v) for v in x_order]
-                            x_idx = np.arange(len(cats))
-                            w = 0.8 / max(len(groups), 1)
-                            for i, gv in enumerate(groups):
+                        # Export: dynamic figure width so bars never overlap
+                        _bar_groups_list = list(dict.fromkeys(bar_df[c].dropna().astype(str).tolist())) if c and c in bar_df.columns else []
+                        _n_groups = max(len(_bar_groups_list), 1)
+                        _n_cats = len(x_order)
+                        # Width: allocate ~0.7in per category-group slot, min 10in
+                        _fig_w = max(10, _n_cats * _n_groups * 0.7 + 3)
+                        fig_e, ax_e = plt.subplots(figsize=(_fig_w, 5))
+
+                        cats = [str(v) for v in x_order]
+                        x_idx = np.arange(len(cats))
+
+                        if c and _bar_groups_list:
+                            # Total bar width per x-position = 0.75; split evenly among groups
+                            _bar_total_w = 0.75
+                            w = _bar_total_w / _n_groups
+                            # Center the group around each x tick
+                            _offset_start = -_bar_total_w / 2 + w / 2
+                            for i, gv in enumerate(_bar_groups_list):
                                 gdf = bar_df[bar_df[c].astype(str) == gv].copy()
                                 gdf["_x_key"] = gdf[x_col].astype(str)
                                 gseries = gdf.groupby("_x_key")[y_col].sum()
                                 vals = [float(gseries.get(cat, 0)) for cat in cats]
                                 ax_e.bar(
-                                    x_idx + i * w,
+                                    x_idx + _offset_start + i * w,
                                     vals,
-                                    width=w,
+                                    width=w * 0.92,      # small gap between bars in same group
                                     color=PALETTE[i % len(PALETTE)],
                                     alpha=0.90,
                                     label=str(gv),
                                     zorder=3,
                                 )
-                            ax_e.set_xticks(x_idx + w * (len(groups) - 1) / 2)
-                            ax_e.set_xticklabels(cats, rotation=30, ha="right")
+                            ax_e.set_xticks(x_idx)
+                            _auto_rotate(ax_e, cats)
                             style_legend(ax_e, title=c)
                         else:
-                            cats = [str(v) for v in x_order]
                             vals = bar_df.groupby(x_col, dropna=False)[y_col].sum().reindex(x_order, fill_value=0).tolist()
-                            cols = [PALETTE[i % len(PALETTE)] for i in range(len(cats))]
-                            ax_e.bar(cats, vals, color=cols, alpha=0.90, zorder=3)
-                            ax_e.tick_params(axis="x", rotation=30)
+                            ax_e.bar(cats, vals, color=PALETTE[0], alpha=0.90, zorder=3, width=0.6)
+                            _auto_rotate(ax_e, cats)
                         styled_ax(ax_e, t, x_col, y_col)
                         fig_e.patch.set_facecolor("white")
-                        fig_e.tight_layout()
+                        fig_e.tight_layout(pad=1.5)
                         export_fig = fig_e
 
                     # ── Heatmap ───────────────────────────────────────────
@@ -1620,16 +1668,19 @@ with tab_c:
                             cbar_kws={"shrink": 0.8, "label": "Correlation"},
                         )
                         ax_d.set_title(make_title("Correlation Matrix"), fontsize=14, fontweight="bold", pad=14, color=TEXT)
-                        ax_d.set_xticklabels(ax_d.get_xticklabels(), fontweight="bold", fontsize=10, rotation=30, ha="right", color=TEXT)
+                        ax_d.set_xticklabels(ax_d.get_xticklabels(), fontweight="bold", fontsize=10, rotation=40, ha="right", color=TEXT)
                         ax_d.set_yticklabels(ax_d.get_yticklabels(), fontweight="bold", fontsize=10, rotation=0, color=TEXT)
                         fig_d.patch.set_facecolor("white")
-                        fig_d.tight_layout()
+                        fig_d.tight_layout(pad=1.5)
                         st.pyplot(fig_d, use_container_width=True)
                         export_fig = fig_d
 
                     if export_fig is not None:
                         st.session_state["last_export_fig"] = export_fig
 
+                except ValueError as e:
+                    if str(e) != "empty_plot_df":
+                        st.error(f"⚠️ Could not generate chart: {e}. Try a different column combination.")
                 except Exception as e:
                     st.error(f"⚠️ Could not generate chart: {e}. Try a different column combination.")
                 finally:
