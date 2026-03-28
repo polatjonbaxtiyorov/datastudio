@@ -503,6 +503,24 @@ with tab_a:
 
         st.markdown("---")
 
+                # ─────────────────────────────────────
+        # 0 · DATASET PREVIEW (NEW)
+        # ─────────────────────────────────────
+        st.markdown('<div class="section-header">0 · Dataset Preview</div>', unsafe_allow_html=True)
+
+        preview_rows = st.slider(
+            "Number of rows to preview",
+            min_value=5,
+            max_value=50,
+            value=10,
+            step=5,
+            key="preview_rows"
+        )
+
+        st.caption(f"Showing first {preview_rows} rows • Shape: {df.shape[0]:,} × {df.shape[1]}")
+
+        show_table(df.head(preview_rows))
+
         st.markdown('<div class="section-header">1 · Dataset Information</div>', unsafe_allow_html=True)
         m1, m2, m3 = st.columns(3)
         with m1:
