@@ -50,9 +50,16 @@ html, body, [class*="css"] {
 .metric-card p  { margin: 0; font-size: 1.5rem; font-weight: 700; color: #111827; }
 
 .section-header {
-    font-size: 1rem; font-weight: 600; color: #111827;
+    font-size: 0.92rem; font-weight: 600; color: #111827;
     border-left: 3px solid #2563eb; padding-left: 0.6rem;
-    margin: 1.2rem 0 0.6rem 0;
+    margin: 0.5rem 0 0.3rem 0;
+}
+/* Tighter spacing inside left viz panel */
+[data-testid="stVerticalBlock"] .stSelectbox,
+[data-testid="stVerticalBlock"] .stSlider,
+[data-testid="stVerticalBlock"] .stTextInput,
+[data-testid="stVerticalBlock"] .stMultiSelect {
+    margin-bottom: 0 !important;
 }
 .recipe-step {
     background: #f0f4ff; border-left: 3px solid #2563eb;
@@ -128,14 +135,25 @@ def push_history():
     st.session_state.df_history.append(st.session_state.df_working.copy())
 
 def reset_session():
+    """Full reset — clears everything including uploaded file, returns to blank page."""
     st.session_state.df_original = None
     st.session_state.df_working = None
     st.session_state.df_history = []
     st.session_state.recipe = []
-    st.session_state.upload_key += 1          # forces file_uploader + text_input to remount fresh
-    # clear chart state too
+    st.session_state.upload_key += 1
+    st.session_state.pop("last_export_fig", None)
     st.session_state.pop("last_chart_fig", None)
     st.session_state.pop("last_chart_is_plotly", None)
+    st.session_state.pop("ai_chat_history", None)
+    st.session_state.pop("ai_pending_suggestions", None)
+
+def reset_all():
+    """Reset All — restores working df to original, clears actions. Keeps file loaded."""
+    if st.session_state.df_original is not None:
+        st.session_state.df_working = st.session_state.df_original.copy()
+    st.session_state.df_history = []
+    st.session_state.recipe = []
+    st.session_state.pop("last_export_fig", None)
     st.session_state.pop("ai_chat_history", None)
     st.session_state.pop("ai_pending_suggestions", None)
 
@@ -235,19 +253,6 @@ with st.sidebar:
     st.markdown("## 🗂️ DataStudio")
     st.markdown("---")
 
-    # AI Toggle
-    st.markdown("### ⚙️ Settings")
-    ai_toggle = st.toggle("Enable AI Assistant", value=st.session_state.ai_enabled)
-    st.session_state.ai_enabled = ai_toggle
-
-    if ai_toggle:
-        # API key from secrets; fallback to session state for local dev
-        if not st.session_state.openai_key:
-            st.session_state.openai_key = st.secrets.get("OPENAI_API_KEY", "")
-        st.markdown('<div class="disclaimer">⚠️ AI suggestions may be imperfect. Always review before applying.</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
     # Transformation Log
     if st.session_state.recipe:
         st.markdown("### 📋 Transformation Log")
@@ -266,8 +271,20 @@ with st.sidebar:
                 st.rerun()
         with col2:
             if st.button("🔄 Reset All", use_container_width=True):
-                reset_session()
+                reset_all()
                 st.rerun()
+
+    # ── AI toggle pinned to bottom via spacer
+    st.markdown('<div style="flex:1"></div>', unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown('<div style="position:fixed;bottom:1.2rem;width:inherit;max-width:230px;">', unsafe_allow_html=True)
+    ai_toggle = st.toggle("🤖 Enable AI Assistant", value=st.session_state.ai_enabled, key="ai_toggle_widget")
+    st.session_state.ai_enabled = ai_toggle
+    if ai_toggle:
+        if not st.session_state.openai_key:
+            st.session_state.openai_key = st.secrets.get("OPENAI_API_KEY", "")
+        st.markdown('<div class="disclaimer">⚠️ AI suggestions may be imperfect.</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 
@@ -1034,9 +1051,8 @@ with tab_c:
                 "Heatmap / Correlation Matrix",
             ], key="chart_type")
 
-            st.markdown("---")
-
             # ── Section 2: Axes & Options
+            st.markdown('<div style="height:0.2rem;border-top:1px solid #e5e7eb;margin:0.4rem 0 0.3rem 0"></div>', unsafe_allow_html=True)
             st.markdown('<div class="section-header">② Axes & Options</div>', unsafe_allow_html=True)
 
             x_col = y_col = color_col = agg_method = None
@@ -1136,13 +1152,13 @@ with tab_c:
 
             chart_title = st.text_input("Chart title (optional)", key="chart_title")
 
-            st.markdown("---")
-
             # ── Section 3: Filters (toggle)
+            st.markdown('<div style="height:0.2rem;border-top:1px solid #e5e7eb;margin:0.4rem 0 0.3rem 0"></div>', unsafe_allow_html=True)
             st.markdown('<div class="section-header">③ Filters</div>', unsafe_allow_html=True)
             show_filters = st.toggle("⚙ Show Filters", value=False, key="show_filters")
 
             plot_df = df.copy()
+            filter_suffix_parts = []
             if show_filters:
                 f1, f2 = st.columns(2)
                 with f1:
@@ -1155,6 +1171,10 @@ with tab_c:
                         )
                         if filter_cat_vals:
                             plot_df = plot_df[plot_df[filter_cat_col].isin(filter_cat_vals)]
+                            vals_label = ", ".join(str(v) for v in filter_cat_vals[:3])
+                            if len(filter_cat_vals) > 3:
+                                vals_label += f" +{len(filter_cat_vals)-3}"
+                            filter_suffix_parts.append(f"{filter_cat_col}: {vals_label}")
                 with f2:
                     filter_num_col = st.selectbox("Filter by numeric range", ["(none)"] + num_cols_list, key="filter_num_col")
                     if filter_num_col != "(none)":
@@ -1163,8 +1183,14 @@ with tab_c:
                         if col_min < col_max:
                             filter_range = st.slider("Range", col_min, col_max, (col_min, col_max), key="filter_range")
                             plot_df = plot_df[(plot_df[filter_num_col] >= filter_range[0]) & (plot_df[filter_num_col] <= filter_range[1])]
+                            filter_suffix_parts.append(f"{filter_num_col}: {filter_range[0]:.1f}–{filter_range[1]:.1f}")
 
-            st.markdown("---")
+            # Build effective title (user title takes priority; auto-suffix added when filtered)
+            filter_suffix = (" · " + " | ".join(filter_suffix_parts)) if filter_suffix_parts else ""
+            effective_title = (chart_title + filter_suffix) if chart_title else None
+            # effective_title is None when no manual title → each chart builds its own + suffix
+
+            st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
             generate_clicked = st.button("📊 Generate Chart", use_container_width=True, key="generate_chart", type="primary")
 
         # ── RIGHT COLUMN — Chart Output (70%)
@@ -1207,7 +1233,12 @@ with tab_c:
 
                 try:
                     export_fig = None   # always matplotlib, used for PNG
-                    title_str = chart_title or ""
+
+                    # Build auto titles with filter suffix
+                    def make_title(base):
+                        if effective_title:
+                            return effective_title
+                        return base + filter_suffix
 
                     # ── Histogram ─────────────────────────────
                     if chart_type == "Histogram":
@@ -1215,7 +1246,7 @@ with tab_c:
                         fig_d, ax_d = plt.subplots(figsize=(10, 5))
                         ax_d.hist(plot_df[x_col].dropna(), bins=bins,
                                   color=PALETTE[0], alpha=0.85, edgecolor="white")
-                        styled_ax(ax_d, title_str or f"Distribution of {x_col}", x_col, "Count")
+                        styled_ax(ax_d, make_title(f"Distribution of {x_col}"), x_col, "Count")
                         fig_d.patch.set_facecolor("white")
                         st.pyplot(fig_d, use_container_width=True)
                         export_fig = fig_d
@@ -1244,7 +1275,7 @@ with tab_c:
                         else:
                             bp = ax_e.boxplot(plot_df[y_col].dropna().values, patch_artist=True)
                             bp["boxes"][0].set_facecolor(PALETTE[0])
-                        styled_ax(ax_e, title_str or f"Box Plot: {y_col}",
+                        styled_ax(ax_e, make_title(f"Box Plot: {y_col}"),
                                   x_col if x_col and x_col != "(none)" else "", y_col)
                         fig_e.patch.set_facecolor("white")
                         export_fig = fig_e
@@ -1274,7 +1305,7 @@ with tab_c:
                         else:
                             ax_e.scatter(scatter_df[x_col], scatter_df[y_col],
                                          color=PALETTE[0], alpha=0.75, s=40)
-                        styled_ax(ax_e, title_str or f"{x_col} vs {y_col}", x_col, y_col)
+                        styled_ax(ax_e, make_title(f"{x_col} vs {y_col}"), x_col, y_col)
                         fig_e.patch.set_facecolor("white")
                         export_fig = fig_e
 
@@ -1309,7 +1340,7 @@ with tab_c:
                             ax_e.plot(line_df_s[x_col].astype(str), line_df_s[y_col],
                                       color=PALETTE[0], marker="o", linewidth=2)
                         ax_e.tick_params(axis="x", rotation=30)
-                        styled_ax(ax_e, title_str or f"{y_col} over {x_col}", x_col, y_col)
+                        styled_ax(ax_e, make_title(f"{y_col} over {x_col}"), x_col, y_col)
                         fig_e.patch.set_facecolor("white")
                         export_fig = fig_e
 
@@ -1350,7 +1381,7 @@ with tab_c:
                             colors = [PALETTE[i % len(PALETTE)] for i in range(len(cats))]
                             ax_e.bar(cats, vals, color=colors, alpha=0.88)
                             ax_e.tick_params(axis="x", rotation=30)
-                        styled_ax(ax_e, title_str or f"{agg_method.title()} of {y_col} by {x_col}",
+                        styled_ax(ax_e, make_title(f"{agg_method.title()} of {y_col} by {x_col}"),
                                   x_col, y_col)
                         fig_e.tight_layout()
                         fig_e.patch.set_facecolor("white")
@@ -1363,7 +1394,7 @@ with tab_c:
                         sns.heatmap(corr, annot=True, fmt=".2f", cmap="RdBu_r",
                                     center=0, ax=ax_d, linewidths=0.5,
                                     annot_kws={"size": 10})
-                        ax_d.set_title(title_str or "Correlation Matrix",
+                        ax_d.set_title(make_title("Correlation Matrix"),
                                        fontsize=14, fontweight="bold")
                         ax_d.set_xticklabels(ax_d.get_xticklabels(),
                                              fontweight="bold", fontsize=10,
