@@ -403,6 +403,72 @@ with tab_a:
     else:
         st.info("👆 Upload a file or paste a Google Sheets URL to get started.")
 
+# ─────────────────────────────────────
+# HELPER: CLEANING SUMMARY
+# ─────────────────────────────────────
+def set_cleaning_summary(before_df, after_df, operation="", method="", focus_cols=None,
+                         before_stats=None, after_stats=None):
+    if focus_cols is None:
+        focus_cols = []
+    if isinstance(focus_cols, str):
+        focus_cols = [focus_cols]
+
+    focus_before = [c for c in focus_cols if c in before_df.columns]
+    focus_after = [c for c in focus_cols if c in after_df.columns]
+
+    if focus_before:
+        before_missing = int(before_df[focus_before].isnull().sum().sum())
+    else:
+        before_missing = int(before_df.isnull().sum().sum())
+
+    if focus_after:
+        after_missing = int(after_df[focus_after].isnull().sum().sum())
+    else:
+        after_missing = int(after_df.isnull().sum().sum())
+
+    st.session_state["last_cleaning_summary"] = {
+        "operation": operation,
+        "method": method,
+        "focus_cols": focus_cols,
+        "before_rows": before_df.shape[0],
+        "after_rows": after_df.shape[0],
+        "before_cols": before_df.shape[1],
+        "after_cols": after_df.shape[1],
+        "before_missing": before_missing,
+        "after_missing": after_missing,
+        "before_stats": before_stats,
+        "after_stats": after_stats,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def render_cleaning_summary():
+    summary = st.session_state.get("last_cleaning_summary")
+    if not summary:
+        return
+
+    st.markdown("### 📊 Before / After Summary")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rows", f'{summary["before_rows"]:,}', f'{summary["after_rows"] - summary["before_rows"]:+,}')
+    c2.metric("Columns", f'{summary["before_cols"]:,}', f'{summary["after_cols"] - summary["before_cols"]:+,}')
+    c3.metric("Missing Values", f'{summary["before_missing"]:,}', f'{summary["after_missing"] - summary["before_missing"]:+,}')
+    c4.metric("Method", summary["method"] or "—")
+
+    st.caption(f'Last operation: **{summary["operation"]}**')
+
+    if summary.get("before_stats") is not None and summary.get("after_stats") is not None:
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown("**Before Statistics**")
+            show_table(summary["before_stats"])
+        with s2:
+            st.markdown("**After Statistics**")
+            show_table(summary["after_stats"])
+
+    st.markdown("---")
+
+
 # ══════════════════════════════════════════════
 # PAGE B — CLEANING STUDIO
 # ══════════════════════════════════════════════
@@ -414,23 +480,23 @@ with tab_b:
     else:
         df = st.session_state.df_working
 
+        # Render the latest cleaning summary first
+        render_cleaning_summary()
+
         # ── AI Assistant (if enabled)
         if st.session_state.ai_enabled:
             st.markdown('<div class="section-header">🤖 AI Cleaning Assistant</div>', unsafe_allow_html=True)
             st.markdown('<div class="disclaimer">⚠️ AI suggestions may be imperfect. Always review before applying.</div>', unsafe_allow_html=True)
 
-            # Init chat history in session state
             if "ai_chat_history" not in st.session_state:
                 st.session_state["ai_chat_history"] = []
             if "ai_pending_suggestions" not in st.session_state:
                 st.session_state["ai_pending_suggestions"] = []
 
-            # Render chat history
             for msg in st.session_state["ai_chat_history"]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Render pending suggestions (confirm / reject per item)
             if st.session_state["ai_pending_suggestions"]:
                 with st.chat_message("assistant"):
                     st.markdown("Here are the suggested operations. Confirm or reject each one:")
@@ -438,16 +504,18 @@ with tab_b:
                         desc = sug.get("description", sug["operation"])
                         cols_str = ", ".join(sug.get("affected_columns", []))
                         params_str = ", ".join(f"{k}: {v}" for k, v in sug.get("parameters", {}).items())
+
                         with st.expander(f"**#{i+1} · {desc}**", expanded=True):
                             st.markdown(f"- **Operation:** `{sug['operation']}`")
                             st.markdown(f"- **Columns:** `{cols_str}`")
                             if params_str:
                                 st.markdown(f"- **Parameters:** {params_str}")
+
                             c1, c2 = st.columns(2)
                             with c1:
-                                if st.button(f"✅ Apply", key=f"ai_confirm_{i}"):
+                                if st.button("✅ Apply", key=f"ai_confirm_{i}"):
+                                    before_df = st.session_state.df_working.copy()
                                     push_history()
-                                    # Execute the operation directly
                                     try:
                                         op = sug["operation"]
                                         params = sug.get("parameters", {})
@@ -463,7 +531,9 @@ with tab_b:
                                                 elif method == "mean" and pd.api.types.is_numeric_dtype(wdf[col]):
                                                     wdf[col] = wdf[col].fillna(wdf[col].mean())
                                                 elif method in ("mode", "most_frequent"):
-                                                    wdf[col] = wdf[col].fillna(wdf[col].mode()[0])
+                                                    mode_vals = wdf[col].mode()
+                                                    if not mode_vals.empty:
+                                                        wdf[col] = wdf[col].fillna(mode_vals[0])
                                                 elif method == "ffill":
                                                     wdf[col] = wdf[col].ffill()
                                                 elif method == "bfill":
@@ -496,7 +566,8 @@ with tab_b:
                                             target = params.get("target", "numeric")
                                             if col and col in wdf.columns:
                                                 if target == "numeric":
-                                                    wdf[col] = pd.to_numeric(wdf[col].astype(str).str.replace(r"[^\d.\-]", "", regex=True), errors="coerce")
+                                                    cleaned = wdf[col].astype(str).str.replace(r"[^\d.\-]", "", regex=True)
+                                                    wdf[col] = pd.to_numeric(cleaned, errors="coerce")
                                                 elif target == "datetime":
                                                     wdf[col] = pd.to_datetime(wdf[col], errors="coerce")
                                                 else:
@@ -542,6 +613,15 @@ with tab_b:
                                                 hi = wdf[col].quantile(upper_q)
                                                 st.session_state.df_working[col] = wdf[col].clip(lo, hi)
 
+                                        after_df = st.session_state.df_working.copy()
+                                        set_cleaning_summary(
+                                            before_df=before_df,
+                                            after_df=after_df,
+                                            operation=op,
+                                            method=desc,
+                                            focus_cols=affected,
+                                        )
+
                                         log_step(op, params, affected, source="ai_suggested")
                                         st.session_state["ai_chat_history"].append({
                                             "role": "assistant",
@@ -551,8 +631,9 @@ with tab_b:
                                     except Exception as e:
                                         st.error(f"Could not apply operation: {e}")
                                     st.rerun()
+
                             with c2:
-                                if st.button(f"❌ Reject", key=f"ai_reject_{i}"):
+                                if st.button("❌ Reject", key=f"ai_reject_{i}"):
                                     st.session_state["ai_chat_history"].append({
                                         "role": "assistant",
                                         "content": f"❌ Rejected: **{desc}**"
@@ -560,7 +641,6 @@ with tab_b:
                                     st.session_state["ai_pending_suggestions"].pop(i)
                                     st.rerun()
 
-            # Chat input box
             ai_prompt = st.chat_input("Describe a cleaning operation, e.g. 'replace nulls in price with median'")
             if ai_prompt:
                 st.session_state["ai_chat_history"].append({"role": "user", "content": ai_prompt})
@@ -586,7 +666,6 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                             max_tokens=1000,
                         )
                         raw = response.choices[0].message.content.strip()
-                        # Strip markdown fences if model added them
                         raw = re.sub(r"```json|```", "", raw).strip()
                         suggestions = json.loads(raw)
                         st.session_state["ai_pending_suggestions"] = suggestions
@@ -611,15 +690,14 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
             miss_summary = profile_missing(df)
             cols_with_missing = miss_summary[miss_summary["Missing Count"] > 0]["Column"].tolist()
 
-            show_table(miss_summary[miss_summary["Missing Count"] > 0])
+            if not miss_summary[miss_summary["Missing Count"] > 0].empty:
+                show_table(miss_summary[miss_summary["Missing Count"] > 0])
 
             if not cols_with_missing:
                 st.success("No missing values.")
             else:
                 mv_col = st.selectbox("Select column", cols_with_missing, key="mv_col")
-                col_dtype = str(df[mv_col].dtype)
                 is_numeric = pd.api.types.is_numeric_dtype(df[mv_col])
-                is_datetime = pd.api.types.is_datetime64_any_dtype(df[mv_col])
 
                 action = st.selectbox("Action", [
                     "Drop rows with missing",
@@ -639,41 +717,66 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 if action == "Drop column if missing > threshold %":
                     extra["threshold"] = st.slider("Threshold %", 0, 100, 50, key="mv_thresh")
 
-                # Before preview
-                before_rows = df.shape[0]
-                before_missing = int(df[mv_col].isnull().sum())
+                before_df = st.session_state.df_working.copy()
 
                 if st.button("Apply", key="mv_apply"):
                     push_history()
                     try:
                         wdf = st.session_state.df_working
+
                         if action == "Drop rows with missing":
                             st.session_state.df_working = wdf.dropna(subset=[mv_col])
+
                         elif action == "Drop column if missing > threshold %":
                             pct = wdf[mv_col].isnull().mean() * 100
                             if pct > extra["threshold"]:
                                 st.session_state.df_working = wdf.drop(columns=[mv_col])
+
                         elif action == "Replace with constant":
                             st.session_state.df_working[mv_col] = wdf[mv_col].fillna(extra["value"])
+
                         elif action == "Replace with mean" and is_numeric:
                             st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mean())
+
                         elif action == "Replace with median" and is_numeric:
                             st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].median())
+
                         elif action in ("Replace with mode", "Replace with most frequent"):
-                            st.session_state.df_working[mv_col] = wdf[mv_col].fillna(wdf[mv_col].mode()[0])
+                            mode_vals = wdf[mv_col].mode()
+                            if not mode_vals.empty:
+                                st.session_state.df_working[mv_col] = wdf[mv_col].fillna(mode_vals[0])
+
                         elif action == "Forward fill":
                             st.session_state.df_working[mv_col] = wdf[mv_col].ffill()
+
                         elif action == "Backward fill":
                             st.session_state.df_working[mv_col] = wdf[mv_col].bfill()
 
-                        after_rows = st.session_state.df_working.shape[0]
-                        after_missing = int(st.session_state.df_working[mv_col].isnull().sum()) if mv_col in st.session_state.df_working.columns else 0
+                        after_df = st.session_state.df_working.copy()
+
                         log_step("fill_missing", {"column": mv_col, "action": action, **extra}, [mv_col])
-                        st.success(f"✅ Done. Rows: {before_rows} → {after_rows} | Missing in '{mv_col}': {before_missing} → {after_missing}")
+                        set_cleaning_summary(
+                            before_df=before_df,
+                            after_df=after_df,
+                            operation="Missing Value Handling",
+                            method=action,
+                            focus_cols=[mv_col],
+                        )
+
+                        after_rows = after_df.shape[0]
+                        after_missing = int(after_df[mv_col].isnull().sum()) if mv_col in after_df.columns else 0
+                        before_rows = before_df.shape[0]
+                        before_missing = int(before_df[mv_col].isnull().sum()) if mv_col in before_df.columns else 0
+
+                        st.success(
+                            f"✅ Done. Rows: {before_rows} → {after_rows} | "
+                            f"Missing in '{mv_col}': {before_missing} → {after_missing}"
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
                         undo_last()
+                        st.rerun()
 
         # ─────────────────────────────────────
         # 4.2 DUPLICATES
@@ -689,14 +792,27 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
 
             if dup_count > 0:
                 if st.checkbox("Show duplicate groups"):
-                    show_table(df[df.duplicated(subset=subset, keep=False)].sort_values(
-                        by=subset or df.columns.tolist()))
+                    show_table(
+                        df[df.duplicated(subset=subset, keep=False)].sort_values(
+                            by=subset or df.columns.tolist()
+                        )
+                    )
 
                 keep = st.selectbox("Keep which duplicate?", ["first", "last"], key="dup_keep")
                 if st.button("Remove Duplicates", key="dup_apply"):
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     st.session_state.df_working = st.session_state.df_working.drop_duplicates(subset=subset, keep=keep)
+                    after_df = st.session_state.df_working.copy()
+
                     log_step("drop_duplicates", {"subset": subset, "keep": keep}, subset or ["all columns"])
+                    set_cleaning_summary(
+                        before_df=before_df,
+                        after_df=after_df,
+                        operation="Duplicate Removal",
+                        method=f"keep={keep}",
+                        focus_cols=subset or list(before_df.columns),
+                    )
                     st.success(f"✅ Removed {dup_count} duplicate rows.")
                     st.rerun()
 
@@ -718,6 +834,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 dirty_clean = st.checkbox("Clean dirty numerics (remove $, commas, etc.)", key="dt_dirty")
 
             if st.button("Convert", key="dt_apply"):
+                before_df = st.session_state.df_working.copy()
                 push_history()
                 try:
                     wdf = st.session_state.df_working
@@ -731,12 +848,22 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     elif target_type == "datetime":
                         fmt = dt_fmt if dt_fmt else None
                         st.session_state.df_working[dt_col] = pd.to_datetime(wdf[dt_col], format=fmt, errors="coerce")
+
+                    after_df = st.session_state.df_working.copy()
                     log_step("convert_dtype", {"column": dt_col, "target": target_type, "format": dt_fmt}, [dt_col])
+                    set_cleaning_summary(
+                        before_df=before_df,
+                        after_df=after_df,
+                        operation="Data Type Conversion",
+                        method=target_type,
+                        focus_cols=[dt_col],
+                    )
                     st.success(f"✅ Converted '{dt_col}' to {target_type}.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                     undo_last()
+                    st.rerun()
 
         # ─────────────────────────────────────
         # 4.4 CATEGORICAL TOOLS
@@ -757,6 +884,10 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 ], key="cat_action")
 
                 params = {}
+                mapping_text = ""
+                unmatched = "Keep as-is"
+                freq_thresh = 5
+
                 if cat_action == "Map / Replace values":
                     st.write("Enter mapping (one per line: old_value=new_value)")
                     mapping_text = st.text_area("Mapping", key="cat_map_text", placeholder="Apt=Apartment\nHse=House")
@@ -768,40 +899,57 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     params = {"threshold": freq_thresh}
 
                 if st.button("Apply", key="cat_apply"):
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     try:
                         wdf = st.session_state.df_working
+
                         if cat_action == "Trim whitespace":
                             wdf[cat_col] = wdf[cat_col].astype(str).str.strip()
+
                         elif cat_action == "Lowercase":
                             wdf[cat_col] = wdf[cat_col].astype(str).str.lower()
+
                         elif cat_action == "Title case":
                             wdf[cat_col] = wdf[cat_col].astype(str).str.title()
+
                         elif cat_action == "Map / Replace values":
                             mapping = {}
                             for line in mapping_text.strip().split("\n"):
                                 if "=" in line:
                                     k, v = line.split("=", 1)
                                     mapping[k.strip()] = v.strip()
-                            if params["unmatched"] == "Set to Other":
+                            if unmatched == "Set to Other":
                                 wdf[cat_col] = wdf[cat_col].apply(lambda x: mapping.get(str(x), "Other"))
                             else:
                                 wdf[cat_col] = wdf[cat_col].map(lambda x: mapping.get(str(x), x))
+
                         elif cat_action == "Group rare categories into 'Other'":
                             freq = wdf[cat_col].value_counts(normalize=True) * 100
                             rare = freq[freq < freq_thresh].index
                             wdf[cat_col] = wdf[cat_col].apply(lambda x: "Other" if x in rare else x)
+
                         elif cat_action == "One-hot encode":
                             dummies = pd.get_dummies(wdf[cat_col], prefix=cat_col)
                             wdf = pd.concat([wdf.drop(columns=[cat_col]), dummies], axis=1)
 
                         st.session_state.df_working = wdf
+                        after_df = st.session_state.df_working.copy()
+
                         log_step("categorical_tool", {"column": cat_col, "action": cat_action, **params}, [cat_col])
+                        set_cleaning_summary(
+                            before_df=before_df,
+                            after_df=after_df,
+                            operation="Categorical Transformation",
+                            method=cat_action,
+                            focus_cols=[cat_col],
+                        )
                         st.success(f"✅ Applied '{cat_action}' to '{cat_col}'.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
                         undo_last()
+                        st.rerun()
 
         # ─────────────────────────────────────
         # 4.5 NUMERIC CLEANING / OUTLIERS
@@ -836,10 +984,10 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
 
                 if out_action != "Do nothing (just show)":
                     if st.button("Apply", key="out_apply"):
+                        before_df = st.session_state.df_working.copy()
                         push_history()
                         try:
                             wdf = st.session_state.df_working
-                            before = wdf.shape[0]
                             if out_action == "Remove outlier rows":
                                 if out_method == "IQR":
                                     mask = (wdf[out_col] >= lower) & (wdf[out_col] <= upper)
@@ -848,18 +996,29 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                                     valid_idx = wdf[out_col].dropna().index[z <= 3]
                                     mask = wdf.index.isin(valid_idx) | wdf[out_col].isnull()
                                 st.session_state.df_working = wdf[mask]
-                                removed = before - st.session_state.df_working.shape[0]
+                                removed = before_df.shape[0] - st.session_state.df_working.shape[0]
                                 st.success(f"✅ Removed {removed} outlier rows.")
+
                             elif out_action == "Cap / Winsorize at quantiles":
                                 lo = wdf[out_col].quantile(q_low)
                                 hi = wdf[out_col].quantile(q_high)
                                 st.session_state.df_working[out_col] = wdf[out_col].clip(lo, hi)
                                 st.success(f"✅ Capped '{out_col}' to [{lo:.2f}, {hi:.2f}].")
+
+                            after_df = st.session_state.df_working.copy()
                             log_step("outlier_handling", {"column": out_col, "method": out_method, "action": out_action}, [out_col])
+                            set_cleaning_summary(
+                                before_df=before_df,
+                                after_df=after_df,
+                                operation="Outlier Handling",
+                                method=out_action,
+                                focus_cols=[out_col],
+                            )
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
                             undo_last()
+                            st.rerun()
 
         # ─────────────────────────────────────
         # 4.6 NORMALIZATION / SCALING
@@ -872,12 +1031,16 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 scale_cols = st.multiselect("Select columns to scale", num_cols_list, key="scale_cols")
                 scale_method = st.selectbox("Method", ["Min-Max Scaling", "Z-score Standardization"], key="scale_method")
 
+                before_stats = None
+                after_stats = None
+
                 if scale_cols:
-                    before_stats = df[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
-                    st.write("**Before stats:**")
+                    before_stats = df[scale_cols].describe().T[["min", "max", "mean", "std"]].round(4)
+                    st.markdown("### Before Scaling Statistics")
                     show_table(before_stats)
 
                 if scale_cols and st.button("Apply Scaling", key="scale_apply"):
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     try:
                         wdf = st.session_state.df_working
@@ -888,16 +1051,30 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                             else:
                                 mean, std = wdf[col].mean(), wdf[col].std()
                                 wdf[col] = (wdf[col] - mean) / std if std != 0 else 0
+
                         st.session_state.df_working = wdf
-                        after_stats = wdf[scale_cols].describe().T[["mean", "std", "min", "max"]].round(3)
-                        st.write("**After stats:**")
+                        after_df = st.session_state.df_working.copy()
+                        after_stats = after_df[scale_cols].describe().T[["min", "max", "mean", "std"]].round(4)
+
+                        st.markdown("### After Scaling Statistics")
                         show_table(after_stats)
+
                         log_step("scale_columns", {"method": scale_method, "columns": scale_cols}, scale_cols)
+                        set_cleaning_summary(
+                            before_df=before_df,
+                            after_df=after_df,
+                            operation="Scaling",
+                            method=scale_method,
+                            focus_cols=scale_cols,
+                            before_stats=before_stats,
+                            after_stats=after_stats,
+                        )
                         st.success(f"✅ Scaled {len(scale_cols)} column(s).")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
                         undo_last()
+                        st.rerun()
 
         # ─────────────────────────────────────
         # 4.7 COLUMN OPERATIONS
@@ -914,61 +1091,114 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 rename_col = st.selectbox("Column to rename", df.columns.tolist(), key="rename_col")
                 new_name = st.text_input("New name", key="rename_new")
                 if st.button("Rename", key="rename_apply") and new_name:
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     st.session_state.df_working = st.session_state.df_working.rename(columns={rename_col: new_name})
+                    after_df = st.session_state.df_working.copy()
+
                     log_step("rename_column", {"from": rename_col, "to": new_name}, [rename_col])
+                    set_cleaning_summary(
+                        before_df=before_df,
+                        after_df=after_df,
+                        operation="Column Rename",
+                        method=f"{rename_col} → {new_name}",
+                        focus_cols=[rename_col, new_name],
+                    )
                     st.success(f"✅ Renamed '{rename_col}' → '{new_name}'.")
                     st.rerun()
 
             elif col_op == "Drop columns":
                 drop_cols = st.multiselect("Select columns to drop", df.columns.tolist(), key="drop_cols")
                 if drop_cols and st.button("Drop", key="drop_apply"):
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     st.session_state.df_working = st.session_state.df_working.drop(columns=drop_cols)
+                    after_df = st.session_state.df_working.copy()
+
                     log_step("drop_columns", {"columns": drop_cols}, drop_cols)
+                    set_cleaning_summary(
+                        before_df=before_df,
+                        after_df=after_df,
+                        operation="Drop Columns",
+                        method=", ".join(drop_cols),
+                        focus_cols=drop_cols,
+                    )
                     st.success(f"✅ Dropped {len(drop_cols)} column(s).")
                     st.rerun()
 
             elif col_op == "Create new column (formula)":
                 new_col_name = st.text_input("New column name", key="formula_name")
-                formula = st.text_input("Formula (use column names as variables)",
-                                         placeholder="price / area   or   price - price.mean()", key="formula_expr")
+                formula = st.text_input(
+                    "Formula (use column names as variables)",
+                    placeholder="price / area   or   price - price.mean()",
+                    key="formula_expr"
+                )
                 st.caption("Available: all column names, numpy as np, pandas as pd")
                 if new_col_name and formula and st.button("Create", key="formula_apply"):
+                    before_df = st.session_state.df_working.copy()
                     push_history()
                     try:
                         local_vars = {col: st.session_state.df_working[col] for col in st.session_state.df_working.columns}
                         local_vars["np"] = np
                         local_vars["pd"] = pd
                         st.session_state.df_working[new_col_name] = eval(formula, {"__builtins__": {}}, local_vars)
+                        after_df = st.session_state.df_working.copy()
+
                         log_step("create_column", {"name": new_col_name, "formula": formula}, [new_col_name])
+                        set_cleaning_summary(
+                            before_df=before_df,
+                            after_df=after_df,
+                            operation="Create Column",
+                            method="formula",
+                            focus_cols=[new_col_name],
+                        )
                         st.success(f"✅ Created column '{new_col_name}'.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Formula error: {e}")
                         undo_last()
+                        st.rerun()
 
             elif col_op == "Bin numeric column":
                 num_cols_list = numeric_cols(df)
-                bin_col = st.selectbox("Column to bin", num_cols_list, key="bin_col")
-                bin_method = st.radio("Binning method", ["Equal-width", "Quantile"], key="bin_method")
-                bin_count = st.slider("Number of bins", 2, 20, 5, key="bin_count")
-                bin_new_name = st.text_input("New column name", value=f"{bin_col}_binned", key="bin_new_name")
-                if st.button("Bin", key="bin_apply"):
-                    push_history()
-                    try:
-                        if bin_method == "Equal-width":
-                            st.session_state.df_working[bin_new_name] = pd.cut(
-                                st.session_state.df_working[bin_col], bins=bin_count, include_lowest=True).astype(str)
-                        else:
-                            st.session_state.df_working[bin_new_name] = pd.qcut(
-                                st.session_state.df_working[bin_col], q=bin_count, duplicates="drop").astype(str)
-                        log_step("bin_column", {"column": bin_col, "method": bin_method, "bins": bin_count}, [bin_new_name])
-                        st.success(f"✅ Created binned column '{bin_new_name}'.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                        undo_last()
+                if num_cols_list:
+                    bin_col = st.selectbox("Column to bin", num_cols_list, key="bin_col")
+                    bin_method = st.radio("Binning method", ["Equal-width", "Quantile"], key="bin_method")
+                    bin_count = st.slider("Number of bins", 2, 20, 5, key="bin_count")
+                    bin_new_name = st.text_input("New column name", value=f"{bin_col}_binned", key="bin_new_name")
+
+                    if st.button("Bin", key="bin_apply"):
+                        before_df = st.session_state.df_working.copy()
+                        push_history()
+                        try:
+                            if bin_method == "Equal-width":
+                                st.session_state.df_working[bin_new_name] = pd.cut(
+                                    st.session_state.df_working[bin_col],
+                                    bins=bin_count,
+                                    include_lowest=True
+                                ).astype(str)
+                            else:
+                                st.session_state.df_working[bin_new_name] = pd.qcut(
+                                    st.session_state.df_working[bin_col],
+                                    q=bin_count,
+                                    duplicates="drop"
+                                ).astype(str)
+
+                            after_df = st.session_state.df_working.copy()
+                            log_step("bin_column", {"column": bin_col, "method": bin_method, "bins": bin_count}, [bin_new_name])
+                            set_cleaning_summary(
+                                before_df=before_df,
+                                after_df=after_df,
+                                operation="Binning",
+                                method=bin_method,
+                                focus_cols=[bin_col, bin_new_name],
+                            )
+                            st.success(f"✅ Created binned column '{bin_new_name}'.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                            undo_last()
+                            st.rerun()
 
         # ─────────────────────────────────────
         # 4.8 DATA VALIDATION RULES
@@ -981,6 +1211,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
             ], key="val_rule")
 
             violations_df = pd.DataFrame()
+            did_check = False
 
             if val_rule == "Numeric range check":
                 num_cols_list = numeric_cols(df)
@@ -989,6 +1220,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     v_min = st.number_input("Min allowed", value=float(df[val_col].min()), key="val_min")
                     v_max = st.number_input("Max allowed", value=float(df[val_col].max()), key="val_max")
                     if st.button("Check", key="val_num_check"):
+                        did_check = True
                         violations_df = df[(df[val_col] < v_min) | (df[val_col] > v_max)]
                 else:
                     st.info("No numeric columns.")
@@ -999,6 +1231,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                     val_col = st.selectbox("Column", cat_cols_list, key="val_cat_col")
                     allowed_text = st.text_area("Allowed values (one per line)", key="val_allowed")
                     if st.button("Check", key="val_cat_check") and allowed_text:
+                        did_check = True
                         allowed = [v.strip() for v in allowed_text.split("\n") if v.strip()]
                         violations_df = df[~df[val_col].isin(allowed)]
                 else:
@@ -1007,6 +1240,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
             elif val_rule == "Non-null constraint":
                 val_cols = st.multiselect("Columns that must be non-null", df.columns.tolist(), key="val_null_cols")
                 if st.button("Check", key="val_null_check") and val_cols:
+                    did_check = True
                     violations_df = df[df[val_cols].isnull().any(axis=1)]
 
             if not violations_df.empty:
@@ -1014,7 +1248,7 @@ Return ONLY the JSON array. No markdown, no backticks, no explanation text."""
                 show_table(violations_df.head(200))
                 viol_csv = violations_df.to_csv(index=False).encode("utf-8")
                 st.download_button("📥 Export Violations CSV", viol_csv, "violations.csv", "text/csv")
-            elif "val_num_check" in st.session_state or "val_cat_check" in st.session_state or "val_null_check" in st.session_state:
+            elif did_check:
                 st.success("✅ No violations found.")
 
         # Current data preview
